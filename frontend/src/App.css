@@ -1,0 +1,187 @@
+.page {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 32px 20px 80px;
+}
+
+.page-header {
+  text-align: center;
+  margin-bottom: 24px;
+}
+
+.page-header h1 {
+  margin: 0 0 8px;
+  font-size: 28px;
+}
+
+.page-header p {
+  margin: 0;
+  color: var(--text);
+}
+
+.card {
+  background: var(--bg);
+  border: 1px solid var(--border, #ddd);
+  border-radius: 12px;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.card h2 {
+  font-size: 16px;
+  margin: 8px 0 0;
+}
+
+.card h2:first-child {
+  margin-top: 0;
+}
+
+.card label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.card input[type="text"],
+.card input[type="password"],
+.card input[type="number"],
+.card input[type="file"],
+.card select,
+.card textarea {
+  font: inherit;
+  font-weight: 400;
+  padding: 8px 10px;
+  border: 1px solid var(--border, #ccc);
+  border-radius: 8px;
+  background: var(--bg);
+  color: inherit;
+}
+
+.per-slide-texts {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.hint-link {
+  font-weight: 400;
+  font-size: 13px;
+}
+
+.advanced-toggle {
+  align-self: flex-start;
+  background: none;
+  border: none;
+  color: var(--accent, #646cff);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 4px 0;
+  text-decoration: underline;
+}
+
+.advanced-section {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px;
+  border: 1px dashed var(--border, #ccc);
+  border-radius: 8px;
+}
+
+.primary-button {
+  font-size: 16px;
+  padding: 12px;
+  border-radius: 8px;
+  border: none;
+  background: var(--accent, #646cff);
+  color: #fff;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.primary-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.secondary-button {
+  font-size: 14px;
+  padding: 8px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border, #ccc);
+  background: none;
+  cursor: pointer;
+  align-self: flex-start;
+}
+
+.form-error {
+  color: #d33;
+  font-size: 14px;
+  margin: 0;
+}
+
+.job-id {
+  font-size: 13px;
+  color: var(--text);
+  word-break: break-all;
+}
+
+.status {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.status-running {
+  flex-direction: row;
+  align-items: center;
+}
+
+.spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--border, #ccc);
+  border-top-color: var(--accent, #646cff);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.download-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.download-list a {
+  display: inline-block;
+  padding: 8px 14px;
+  border-radius: 8px;
+  background: var(--accent, #646cff);
+  color: #fff;
+  text-decoration: none;
+  font-weight: 600;
+}
+
+.status-error pre {
+  white-space: pre-wrap;
+  color: #d33;
+  background: rgba(221, 51, 51, 0.08);
+  padding: 10px;
+  border-radius: 8px;
+  font-size: 13px;
+}
