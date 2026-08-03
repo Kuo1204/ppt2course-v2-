@@ -6,10 +6,13 @@ from ppt2course.subtitle import TimedChunk
 from ppt2course.video import (
     SlideVideoInput,
     VideoComposeError,
+    _add_logo_overlay,
     _audio_acrossfade_chain,
     _build_cues,
     _build_ffmpeg_command,
     _compute_slide_offsets,
+    _concatenate_with_intro_outro,
+    _mix_background_music,
     _scale_pad_filter,
     _total_duration_ms,
     _video_xfade_chain,
@@ -232,3 +235,138 @@ def test_compose_video_writes_srt_and_calls_ffmpeg(tmp_path):
     assert "你好" in srt_content
     assert "謝謝" in srt_content
     mock_run.assert_called_once()
+
+
+# ---- _add_logo_overlay / _mix_background_music / _concatenate_with_intro_outro ----
+
+def _fake_run_ok():
+    class FakeResult:
+        returncode = 0
+        stderr = ""
+
+    return FakeResult()
+
+
+def test_add_logo_overlay_command_construction():
+    with patch("ppt2course.video.subprocess.run", return_value=_fake_run_ok()) as mock_run:
+        _add_logo_overlay("video.mp4", "logo.png", "out.mp4", logo_width=160, margin=24)
+
+    cmd = mock_run.call_args[0][0]
+    assert cmd[:2] == ["ffmpeg", "-y"]
+    assert "video.mp4" in cmd
+    assert "logo.png" in cmd
+    filter_arg = cmd[cmd.index("-filter_complex") + 1]
+    assert "scale=160:-1[logo]" in filter_arg
+    assert "overlay=W-w-24:24" in filter_arg
+    assert cmd[-1] == "out.mp4"
+
+
+def test_add_logo_overlay_raises_on_nonzero_exit():
+    class FakeResult:
+        returncode = 1
+        stderr = "logo failure"
+
+    with patch("ppt2course.video.subprocess.run", return_value=FakeResult()):
+        with pytest.raises(VideoComposeError):
+            _add_logo_overlay("video.mp4", "logo.png", "out.mp4", 160, 24)
+
+
+def test_mix_background_music_command_construction():
+    with patch("ppt2course.video.subprocess.run", return_value=_fake_run_ok()) as mock_run:
+        _mix_background_music("video.mp4", "bgm.mp3", "out.mp4", bgm_volume=0.2)
+
+    cmd = mock_run.call_args[0][0]
+    assert "-stream_loop" in cmd
+    assert cmd[cmd.index("-stream_loop") + 1] == "-1"
+    assert "bgm.mp3" in cmd
+    filter_arg = cmd[cmd.index("-filter_complex") + 1]
+    assert "volume=0.2[bgm]" in filter_arg
+    assert "amix=inputs=2:duration=first" in filter_arg
+    assert "-shortest" in cmd
+
+
+def test_mix_background_music_raises_on_nonzero_exit():
+    class FakeResult:
+        returncode = 1
+        stderr = "bgm failure"
+
+    with patch("ppt2course.video.subprocess.run", return_value=FakeResult()):
+        with pytest.raises(VideoComposeError):
+            _mix_background_music("video.mp4", "bgm.mp3", "out.mp4", 0.2)
+
+
+def test_concatenate_with_intro_outro_no_intro_no_outro_copies_file(tmp_path):
+    main = tmp_path / "main.mp4"
+    main.write_bytes(b"main content")
+    out = tmp_path / "out.mp4"
+
+    _concatenate_with_intro_outro(str(main), str(out), None, None, (1920, 1080), 30)
+
+    assert out.read_bytes() == b"main content"
+
+
+def test_concatenate_with_intro_outro_builds_concat_filter_with_intro_and_outro():
+    with patch("ppt2course.video.subprocess.run", return_value=_fake_run_ok()) as mock_run:
+        _concatenate_with_intro_outro(
+            "main.mp4", "out.mp4", "intro.mp4", "outro.mp4", (1280, 720), 30
+        )
+
+    cmd = mock_run.call_args[0][0]
+    assert cmd.count("-i") == 3
+    assert "intro.mp4" in cmd
+    assert "main.mp4" in cmd
+    assert "outro.mp4" in cmd
+    filter_arg = cmd[cmd.index("-filter_complex") + 1]
+    assert "concat=n=3:v=1:a=1[outv][outa]" in filter_arg
+    assert cmd[-1] == "out.mp4"
+
+
+def test_concatenate_with_intro_outro_raises_on_nonzero_exit():
+    class FakeResult:
+        returncode = 1
+        stderr = "concat failure"
+
+    with patch("ppt2course.video.subprocess.run", return_value=FakeResult()):
+        with pytest.raises(VideoComposeError):
+            _concatenate_with_intro_outro(
+                "main.mp4", "out.mp4", "intro.mp4", None, (1920, 1080), 30
+            )
+
+
+# ---- compose_video chaining Logo/BGM/intro-outro (mocked) ----
+
+def test_compose_video_chains_logo_bgm_intro_outro_when_all_provided(tmp_path):
+    slide1 = _slide([TimedChunk("你好", 0, 800), TimedChunk("。", 800, 800)])
+
+    with patch("ppt2course.video.shutil.which", return_value="/usr/bin/ffmpeg"):
+        with patch("ppt2course.video.get_audio_duration_ms", return_value=1000):
+            with patch(
+                "ppt2course.video.subprocess.run", return_value=_fake_run_ok()
+            ) as mock_run:
+                compose_video(
+                    [slide1],
+                    str(tmp_path / "out.mp4"),
+                    str(tmp_path / "out.srt"),
+                    logo_path="logo.png",
+                    bgm_path="bgm.mp3",
+                    intro_path="intro.mp4",
+                    outro_path="outro.mp4",
+                )
+
+    # core build + logo + bgm + intro/outro concat = 4 ffmpeg invocations
+    assert mock_run.call_count == 4
+
+
+def test_compose_video_no_optional_extras_only_calls_ffmpeg_once(tmp_path):
+    slide1 = _slide([TimedChunk("你好", 0, 800)])
+
+    with patch("ppt2course.video.shutil.which", return_value="/usr/bin/ffmpeg"):
+        with patch("ppt2course.video.get_audio_duration_ms", return_value=1000):
+            with patch(
+                "ppt2course.video.subprocess.run", return_value=_fake_run_ok()
+            ) as mock_run:
+                compose_video(
+                    [slide1], str(tmp_path / "out.mp4"), str(tmp_path / "out.srt")
+                )
+
+    assert mock_run.call_count == 1

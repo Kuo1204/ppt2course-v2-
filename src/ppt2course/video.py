@@ -1,15 +1,16 @@
-"""STEP 5: Video composition — xfade transitions, subtitle burn-in.
+"""STEP 5: Video composition — xfade transitions, subtitle burn-in, optional
+Logo overlay / BGM mixing / intro-outro concatenation.
 
-Logo/BGM/intro-outro are deferred (out of scope for this pass). This module
-is the single place that computes the post-transition cumulative timeline,
-so the burned-in subtitles and the xfade/acrossfade-shortened video always
-agree on where each slide actually starts — per-slide TimedChunk lists
+This module is the single place that computes the post-transition cumulative
+timeline, so the burned-in subtitles and the xfade/acrossfade-shortened video
+always agree on where each slide actually starts — per-slide TimedChunk lists
 (STEP3's raw, un-offset output) go in, offsets are computed here, and
 STEP4's generate_cues/cues_to_srt are called with those offsets baked in.
 """
 
 import shutil
 import subprocess
+import tempfile
 from dataclasses import dataclass
 
 from ppt2course.audio_duration import get_audio_duration_ms
@@ -20,6 +21,9 @@ DEFAULT_TRANSITION_DURATION_MS = 500
 DEFAULT_RESOLUTION = (1920, 1080)
 DEFAULT_FPS = 30
 DEFAULT_FONT_SIZE = 48
+DEFAULT_LOGO_WIDTH = 160
+DEFAULT_LOGO_MARGIN = 24
+DEFAULT_BGM_VOLUME = 0.2
 
 # ASS BackColour alpha: 00=opaque .. FF=transparent. 0x33 ≈ 20% transparent
 # i.e. ~80% opaque black box, per the confirmed subtitle styling default.
@@ -206,6 +210,90 @@ def _build_ffmpeg_command(
     return cmd
 
 
+def _run_ffmpeg(cmd: list[str], step_description: str) -> None:
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise VideoComposeError(
+            f"ffmpeg failed during {step_description} (exit {result.returncode}): {result.stderr}"
+        )
+
+
+def _add_logo_overlay(
+    video_path: str, logo_path: str, out_path: str, logo_width: int, margin: int
+) -> None:
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", video_path,
+        "-i", logo_path,
+        "-filter_complex",
+        f"[1:v]scale={logo_width}:-1[logo];[0:v][logo]overlay=W-w-{margin}:{margin}",
+        "-c:a", "copy",
+        "-pix_fmt", "yuv420p",
+        out_path,
+    ]
+    _run_ffmpeg(cmd, "logo overlay")
+
+
+def _mix_background_music(
+    video_path: str, bgm_path: str, out_path: str, bgm_volume: float
+) -> None:
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", video_path,
+        "-stream_loop", "-1", "-i", bgm_path,
+        "-filter_complex",
+        f"[1:a]volume={bgm_volume}[bgm];[0:a][bgm]amix=inputs=2:duration=first:dropout_transition=2[aout]",
+        "-map", "0:v", "-map", "[aout]",
+        "-c:v", "copy",
+        "-c:a", "aac",
+        "-shortest",
+        out_path,
+    ]
+    _run_ffmpeg(cmd, "background music mixing")
+
+
+def _concatenate_with_intro_outro(
+    main_video_path: str,
+    out_path: str,
+    intro_path: str | None,
+    outro_path: str | None,
+    resolution: tuple[int, int],
+    fps: int,
+) -> None:
+    parts = [p for p in (intro_path, main_video_path, outro_path) if p]
+
+    if len(parts) == 1:
+        shutil.copy(main_video_path, out_path)
+        return
+
+    width, height = resolution
+    cmd = ["ffmpeg", "-y"]
+    for p in parts:
+        cmd += ["-i", p]
+
+    filter_segments = []
+    for idx in range(len(parts)):
+        filter_segments.append(
+            f"[{idx}:v]scale={width}:{height}:force_original_aspect_ratio=decrease,"
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,"
+            f"fps={fps},setsar=1,format=yuv420p[v{idx}];"
+            f"[{idx}:a]aformat=sample_rates=44100:channel_layouts=stereo[a{idx}]"
+        )
+    concat_inputs = "".join(f"[v{i}][a{i}]" for i in range(len(parts)))
+    filter_complex = (
+        ";".join(filter_segments)
+        + f";{concat_inputs}concat=n={len(parts)}:v=1:a=1[outv][outa]"
+    )
+
+    cmd += [
+        "-filter_complex", filter_complex,
+        "-map", "[outv]", "-map", "[outa]",
+        "-c:v", "libx264", "-c:a", "aac", "-pix_fmt", "yuv420p",
+        out_path,
+    ]
+    _run_ffmpeg(cmd, "intro/outro concatenation")
+
+
 def compose_video(
     slides: list[SlideVideoInput],
     out_video_path: str,
@@ -215,6 +303,13 @@ def compose_video(
     resolution: tuple[int, int] = DEFAULT_RESOLUTION,
     fps: int = DEFAULT_FPS,
     font_size: int = DEFAULT_FONT_SIZE,
+    logo_path: str | None = None,
+    logo_width: int = DEFAULT_LOGO_WIDTH,
+    logo_margin: int = DEFAULT_LOGO_MARGIN,
+    bgm_path: str | None = None,
+    bgm_volume: float = DEFAULT_BGM_VOLUME,
+    intro_path: str | None = None,
+    outro_path: str | None = None,
 ) -> None:
     if not slides:
         raise VideoComposeError("slides must not be empty")
@@ -229,19 +324,44 @@ def compose_video(
     with open(out_srt_path, "w", encoding="utf-8", newline="") as f:
         f.write(cues_to_srt(cues))
 
-    cmd = _build_ffmpeg_command(
-        slides,
-        durations_ms,
-        offsets_ms,
-        out_srt_path,
-        out_video_path,
-        transition,
-        transition_duration_ms,
-        resolution,
-        fps,
-        font_size,
-    )
+    needs_post_processing = bool(logo_path or bgm_path or intro_path or outro_path)
+    temp_dir = tempfile.mkdtemp(prefix="ppt2course_video_") if needs_post_processing else None
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise VideoComposeError(f"ffmpeg exited with code {result.returncode}: {result.stderr}")
+    try:
+        core_output = f"{temp_dir}/01_core.mp4" if needs_post_processing else out_video_path
+
+        cmd = _build_ffmpeg_command(
+            slides,
+            durations_ms,
+            offsets_ms,
+            out_srt_path,
+            core_output,
+            transition,
+            transition_duration_ms,
+            resolution,
+            fps,
+            font_size,
+        )
+        _run_ffmpeg(cmd, "slide/transition/subtitle composition")
+
+        current = core_output
+
+        if logo_path:
+            next_path = f"{temp_dir}/02_logo.mp4"
+            _add_logo_overlay(current, logo_path, next_path, logo_width, logo_margin)
+            current = next_path
+
+        if bgm_path:
+            next_path = f"{temp_dir}/03_bgm.mp4"
+            _mix_background_music(current, bgm_path, next_path, bgm_volume)
+            current = next_path
+
+        if intro_path or outro_path:
+            _concatenate_with_intro_outro(
+                current, out_video_path, intro_path, outro_path, resolution, fps
+            )
+        elif current != out_video_path:
+            shutil.copy(current, out_video_path)
+    finally:
+        if temp_dir:
+            shutil.rmtree(temp_dir, ignore_errors=True)
