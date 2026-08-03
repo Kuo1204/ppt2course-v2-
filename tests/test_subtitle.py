@@ -88,6 +88,20 @@ def test_short_cue_does_not_merge_when_merge_would_exceed_char_limit():
     assert (cues[1].start_ms, cues[1].end_ms, cues[1].text) == (800, 1600, "八九十甲乙丙丁戊")
 
 
+def test_kept_hard_break_immediately_after_char_limit_may_yield_16_chars():
+    # Accepted edge case: when the buffer is already at the 15-char limit and the
+    # very next unit is a kept terminator (？/！), the resulting line is 16 chars.
+    # ？/！ are never stripped (unlike。，、；), so this one-char overshoot is
+    # intentionally allowed rather than pushing the terminator onto its own line.
+    text = "一二三四五六七八九十甲乙丙丁戊？"
+    assert len(text) == 16
+    chars = make_chars(text, char_ms=100)
+    cues = generate_cues(chars)
+    assert len(cues) == 1
+    assert cues[0].text == text
+    assert len(cues[0].text) == 16
+
+
 def test_start_offset_shifts_all_timestamps():
     chars = make_chars("大家好歡迎來到這堂課", char_ms=300)
     cues = generate_cues(chars, start_offset_ms=5000)
