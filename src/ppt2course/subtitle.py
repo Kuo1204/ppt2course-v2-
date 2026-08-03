@@ -1,4 +1,10 @@
-"""STEP 4: Subtitle (SRT) generation from character-level TTS timestamps."""
+"""STEP 4: Subtitle (SRT) generation from TTS timing chunks.
+
+A "chunk" is whatever edge-tts's WordBoundary reports as one timed unit — for
+CJK text that's usually one character, but the underlying tokenizer sometimes
+groups multiple characters into a single boundary event (e.g. "世界"). Chunks
+are treated as atomic here: a cut can happen between chunks, never inside one.
+"""
 
 from dataclasses import dataclass
 
@@ -9,12 +15,11 @@ HARD_BREAK_CHARS = frozenset("。！？")
 SOFT_BREAK_CHARS = frozenset("，、；")
 STRIP_TRAILING_CHARS = frozenset("。，、；")
 KEEP_TRAILING_CHARS = frozenset("？！")
-CONTINUITY_BACKTRACK_LIMIT = 5
 
 
 @dataclass(frozen=True)
-class CharTiming:
-    char: str
+class TimedChunk:
+    text: str
     start_ms: int
     end_ms: int
 
@@ -27,36 +32,41 @@ class SubtitleCue:
     text: str
 
 
-def _is_alnum(char: str) -> bool:
-    return char.isascii() and char.isalnum()
+def _chunk_list_len(units: list[TimedChunk]) -> int:
+    return sum(len(u.text) for u in units)
 
 
-def _split_into_lines(chars: list[CharTiming]) -> list[list[CharTiming]]:
-    lines: list[list[CharTiming]] = []
-    buf: list[CharTiming] = []
+def _split_into_lines(chunks: list[TimedChunk]) -> list[list[TimedChunk]]:
+    lines: list[list[TimedChunk]] = []
+    buf: list[TimedChunk] = []
+    buf_len = 0
     last_soft_idx: int | None = None
 
-    for unit in chars:
-        buf.append(unit)
-
-        if unit.char in HARD_BREAK_CHARS:
+    for unit in chunks:
+        if unit.text in HARD_BREAK_CHARS:
+            buf.append(unit)
             lines.append(buf)
             buf = []
+            buf_len = 0
             last_soft_idx = None
             continue
 
-        if unit.char in SOFT_BREAK_CHARS:
-            last_soft_idx = len(buf) - 1
-
-        if len(buf) > MAX_CHARS_PER_LINE:
+        if buf and buf_len + len(unit.text) > MAX_CHARS_PER_LINE:
             if last_soft_idx is not None:
                 lines.append(buf[: last_soft_idx + 1])
                 buf = buf[last_soft_idx + 1 :]
+                buf_len = _chunk_list_len(buf)
                 last_soft_idx = None
             else:
-                cut = _find_continuity_boundary(buf)
-                lines.append(buf[:cut])
-                buf = buf[cut:]
+                lines.append(buf)
+                buf = []
+                buf_len = 0
+
+        buf.append(unit)
+        buf_len += len(unit.text)
+
+        if unit.text in SOFT_BREAK_CHARS:
+            last_soft_idx = len(buf) - 1
 
     if buf:
         lines.append(buf)
@@ -64,19 +74,7 @@ def _split_into_lines(chars: list[CharTiming]) -> list[list[CharTiming]]:
     return lines
 
 
-def _find_continuity_boundary(buf: list[CharTiming]) -> int:
-    for back in range(CONTINUITY_BACKTRACK_LIMIT):
-        pos = MAX_CHARS_PER_LINE - back
-        if pos <= 0:
-            break
-        left = buf[pos - 1].char
-        right = buf[pos].char
-        if not (_is_alnum(left) and _is_alnum(right)):
-            return pos
-    return MAX_CHARS_PER_LINE
-
-
-def _merge_short_lines(lines: list[list[CharTiming]]) -> list[list[CharTiming]]:
+def _merge_short_lines(lines: list[list[TimedChunk]]) -> list[list[TimedChunk]]:
     pending = list(lines)
     idx = 0
     while idx < len(pending):
@@ -87,7 +85,7 @@ def _merge_short_lines(lines: list[list[CharTiming]]) -> list[list[CharTiming]]:
             if duration >= MIN_CUE_DURATION_MS or not has_next:
                 break
             nxt = pending[idx + 1]
-            if len(current) + len(nxt) > MAX_CHARS_PER_LINE:
+            if _chunk_list_len(current) + _chunk_list_len(nxt) > MAX_CHARS_PER_LINE:
                 break
             current = current + nxt
             pending[idx] = current
@@ -96,18 +94,18 @@ def _merge_short_lines(lines: list[list[CharTiming]]) -> list[list[CharTiming]]:
     return pending
 
 
-def _line_text(line: list[CharTiming]) -> str:
-    text = "".join(unit.char for unit in line)
+def _line_text(line: list[TimedChunk]) -> str:
+    text = "".join(unit.text for unit in line)
     if text and text[-1] in STRIP_TRAILING_CHARS:
         text = text[:-1]
     return text
 
 
-def generate_cues(chars: list[CharTiming], start_offset_ms: int = 0) -> list[SubtitleCue]:
-    if not chars:
+def generate_cues(chunks: list[TimedChunk], start_offset_ms: int = 0) -> list[SubtitleCue]:
+    if not chunks:
         return []
 
-    lines = _split_into_lines(chars)
+    lines = _split_into_lines(chunks)
     lines = _merge_short_lines(lines)
 
     cues = [
