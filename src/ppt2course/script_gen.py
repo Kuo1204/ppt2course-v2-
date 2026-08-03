@@ -1,7 +1,9 @@
 """STEP 2: Generate Script — AI auto-generate / speaker notes / user-provided / AI polish.
 
-Only the two deterministic modes (NOTES, OWN) are implemented so far.
-AUTO and POLISH require an LLM call and are scoped for a later session.
+The actual AI call (AUTO, POLISH) happens in the browser using the user's own
+Gemini API key — the key never reaches this backend. By the time text arrives
+here it is already finalized, so AUTO/OWN/POLISH share the same passthrough
+path; only the empty-text validation differs per mode.
 """
 
 from enum import Enum, auto
@@ -20,29 +22,40 @@ class ScriptGenerationError(Exception):
     pass
 
 
+# AI-produced text (AUTO, POLISH) must not be blank — an AI call that
+# returned nothing is a failure, unlike OWN where a user may deliberately
+# leave a slide silent.
+_REQUIRES_NON_EMPTY = {ScriptMode.AUTO, ScriptMode.POLISH}
+
+
 def _generate_from_notes(slides: list[SlideContent]) -> list[str]:
     return [slide.notes for slide in slides]
 
 
-def _generate_from_own_texts(slides: list[SlideContent], own_texts: list[str] | None) -> list[str]:
-    if own_texts is None:
-        raise ScriptGenerationError("own_texts is required for ScriptMode.OWN")
-    if len(own_texts) != len(slides):
+def _generate_from_texts(
+    mode: ScriptMode, slides: list[SlideContent], texts: list[str] | None
+) -> list[str]:
+    if texts is None:
+        raise ScriptGenerationError(f"texts is required for {mode}")
+    if len(texts) != len(slides):
         raise ScriptGenerationError(
-            f"own_texts length ({len(own_texts)}) does not match slide count ({len(slides)})"
+            f"texts length ({len(texts)}) does not match slide count ({len(slides)})"
         )
-    return list(own_texts)
+    if mode in _REQUIRES_NON_EMPTY:
+        for slide, text in zip(slides, texts):
+            if not text.strip():
+                raise ScriptGenerationError(
+                    f"{mode} does not allow empty text (slide index {slide.index})"
+                )
+    return list(texts)
 
 
 def generate_script(
     mode: ScriptMode,
     slides: list[SlideContent],
-    own_texts: list[str] | None = None,
+    texts: list[str] | None = None,
 ) -> list[str]:
     if mode is ScriptMode.NOTES:
         return _generate_from_notes(slides)
 
-    if mode is ScriptMode.OWN:
-        return _generate_from_own_texts(slides, own_texts)
-
-    raise NotImplementedError(f"{mode} is not implemented yet")
+    return _generate_from_texts(mode, slides, texts)
