@@ -14,11 +14,13 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from ppt2course.jobs import JobManager, JobStatus
+from ppt2course.script_extract import ScriptExtractionError, extract_text_from_file
 from ppt2course.script_gen import DEFAULT_GEMINI_MODEL, ScriptMode
+from ppt2course.tts import TtsError, synthesize_preview
 from ppt2course.video import (
     DEFAULT_BGM_VOLUME,
     DEFAULT_FONT_SIZE,
@@ -37,15 +39,29 @@ DEFAULT_FRONTEND_DIST = os.environ.get(
 )
 ALLOWED_DOWNLOAD_TYPES = {"mp4", "srt", "docx"}
 
+# Sample text per supported voice, used for the "preview this voice" button.
+# Kept as an explicit allow-list (rather than accepting any edge-tts voice
+# string) so the preview endpoint can't be used to synthesize arbitrary text
+# through an unvetted voice.
+VOICE_PREVIEW_SAMPLES = {
+    "zh-TW-HsiaoChenNeural": "您好，這是語音預覽範例。",
+    "zh-TW-YunJheNeural": "您好，這是語音預覽範例。",
+    "zh-CN-XiaoxiaoNeural": "您好，这是语音预览示例。",
+    "zh-CN-YunxiNeural": "您好，这是语音预览示例。",
+    "en-US-AriaNeural": "Hello, this is a voice preview.",
+}
+
 
 def create_app(
     job_manager: JobManager | None = None,
     data_root: str = DEFAULT_DATA_ROOT,
     frontend_dist: str | None = DEFAULT_FRONTEND_DIST,
+    voice_preview_fn=synthesize_preview,
 ) -> FastAPI:
     app = FastAPI(title="PPT2Course AI")
     app.state.job_manager = job_manager if job_manager is not None else JobManager()
     app.state.data_root = data_root
+    app.state.voice_preview_cache = {}
 
     app.add_middleware(
         CORSMiddleware,
@@ -164,6 +180,30 @@ def create_app(
         if filetype not in ALLOWED_DOWNLOAD_TYPES or filetype not in job.result:
             raise HTTPException(status_code=404, detail="file not available")
         return FileResponse(job.result[filetype])
+
+    @app.post("/api/extract-script-text")
+    async def extract_script_text(file: UploadFile = File(...)):
+        content = await file.read()
+        try:
+            text = extract_text_from_file(file.filename or "", content)
+        except ScriptExtractionError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {"text": text}
+
+    @app.get("/api/voice-preview/{voice}")
+    def voice_preview(voice: str):
+        sample_text = VOICE_PREVIEW_SAMPLES.get(voice)
+        if sample_text is None:
+            raise HTTPException(status_code=400, detail=f"unsupported voice: {voice}")
+
+        cache: dict[str, bytes] = app.state.voice_preview_cache
+        if voice not in cache:
+            try:
+                cache[voice] = voice_preview_fn(sample_text, voice)
+            except TtsError as exc:
+                raise HTTPException(status_code=502, detail=f"voice preview failed: {exc}") from exc
+
+        return Response(content=cache[voice], media_type="audio/mpeg")
 
     # Mounted last so the /api/* routes above always match first. Serves the
     # built React SPA (npm run build in frontend/) for a single-deployment setup.

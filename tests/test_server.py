@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 from ppt2course.jobs import JobManager
 from ppt2course.pipeline import PipelineError
 from ppt2course.server import create_app
+from ppt2course.tts import TtsError
 
 
 def _make_client(pipeline_fn, tmp_path):
@@ -208,6 +209,89 @@ def test_missing_frontend_dist_does_not_crash_app_creation(tmp_path):
 
     response = client.get("/")
     assert response.status_code == 404
+
+
+def test_extract_script_text_from_txt_upload(tmp_path):
+    manager = JobManager(pipeline_fn=lambda **kwargs: {}, auto_start=False)
+    app = create_app(job_manager=manager, data_root=str(tmp_path / "data"), frontend_dist=None)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/extract-script-text",
+        files={"file": ("script.txt", io.BytesIO("第1頁\n大家好".encode("utf-8")), "text/plain")},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"text": "第1頁\n大家好"}
+
+
+def test_extract_script_text_rejects_unsupported_extension(tmp_path):
+    manager = JobManager(pipeline_fn=lambda **kwargs: {}, auto_start=False)
+    app = create_app(job_manager=manager, data_root=str(tmp_path / "data"), frontend_dist=None)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/extract-script-text",
+        files={"file": ("script.pdf", io.BytesIO(b"whatever"), "application/pdf")},
+    )
+    assert response.status_code == 400
+
+
+def test_voice_preview_returns_audio_and_caches_by_voice(tmp_path):
+    calls = []
+
+    def fake_preview(text, voice):
+        calls.append((text, voice))
+        return b"fake-mp3-bytes"
+
+    manager = JobManager(pipeline_fn=lambda **kwargs: {}, auto_start=False)
+    app = create_app(
+        job_manager=manager,
+        data_root=str(tmp_path / "data"),
+        frontend_dist=None,
+        voice_preview_fn=fake_preview,
+    )
+    client = TestClient(app)
+
+    first = client.get("/api/voice-preview/zh-TW-HsiaoChenNeural")
+    assert first.status_code == 200
+    assert first.content == b"fake-mp3-bytes"
+    assert first.headers["content-type"] == "audio/mpeg"
+
+    second = client.get("/api/voice-preview/zh-TW-HsiaoChenNeural")
+    assert second.content == b"fake-mp3-bytes"
+
+    assert len(calls) == 1  # cached on the second request, no repeat synthesis
+
+
+def test_voice_preview_rejects_unknown_voice(tmp_path):
+    manager = JobManager(pipeline_fn=lambda **kwargs: {}, auto_start=False)
+    app = create_app(
+        job_manager=manager,
+        data_root=str(tmp_path / "data"),
+        frontend_dist=None,
+        voice_preview_fn=lambda text, voice: b"",
+    )
+    client = TestClient(app)
+
+    response = client.get("/api/voice-preview/not-a-real-voice")
+    assert response.status_code == 400
+
+
+def test_voice_preview_wraps_tts_error(tmp_path):
+    def failing_preview(text, voice):
+        raise TtsError("edge-tts streaming failed: network error")
+
+    manager = JobManager(pipeline_fn=lambda **kwargs: {}, auto_start=False)
+    app = create_app(
+        job_manager=manager,
+        data_root=str(tmp_path / "data"),
+        frontend_dist=None,
+        voice_preview_fn=failing_preview,
+    )
+    client = TestClient(app)
+
+    response = client.get("/api/voice-preview/zh-TW-HsiaoChenNeural")
+    assert response.status_code == 502
 
 
 def test_gemini_api_key_reaches_pipeline_but_never_echoed_in_status(tmp_path):

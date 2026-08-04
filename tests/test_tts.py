@@ -3,7 +3,7 @@ from unittest.mock import patch
 import pytest
 
 from ppt2course.subtitle import TimedChunk
-from ppt2course.tts import TtsError, synthesize
+from ppt2course.tts import TtsError, synthesize, synthesize_preview
 
 
 class FakeCommunicate:
@@ -117,3 +117,17 @@ def test_raises_tts_error_on_stream_failure(tmp_path):
     with _patched(chunks, raise_during_stream=True):
         with pytest.raises(TtsError):
             synthesize("你好", "zh-TW-HsiaoChenNeural", str(tmp_path / "out.mp3"))
+
+
+def test_synthesize_preview_returns_concatenated_audio_bytes():
+    chunks = [audio(b"abc"), audio(b"def"), word_boundary("你", 0, 200)]
+    with _patched(chunks):
+        result = synthesize_preview("你好", "zh-TW-HsiaoChenNeural")
+    assert result == b"abcdef"
+
+
+def test_synthesize_preview_raises_tts_error_on_stream_failure():
+    chunks = [audio(b"abc")]
+    with _patched(chunks, raise_during_stream=True):
+        with pytest.raises(TtsError):
+            synthesize_preview("你好", "zh-TW-HsiaoChenNeural")

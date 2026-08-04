@@ -28,3 +28,31 @@ export async function getJobStatus(jobId) {
 export function downloadUrl(path) {
   return `${API_BASE_URL}${path}`;
 }
+
+export async function extractScriptText(file) {
+  const form = new FormData();
+  form.append("file", file);
+
+  const response = await fetch(`${API_BASE_URL}/api/extract-script-text`, {
+    method: "POST",
+    body: form,
+  });
+
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.detail || `講稿檔案解析失敗 (HTTP ${response.status})`);
+  }
+
+  return response.json();
+}
+
+export async function fetchVoicePreview(voice) {
+  const response = await fetch(`${API_BASE_URL}/api/voice-preview/${encodeURIComponent(voice)}`);
+
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.detail || `語音預覽失敗 (HTTP ${response.status})`);
+  }
+
+  return response.blob();
+}

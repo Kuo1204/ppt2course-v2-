@@ -76,3 +76,23 @@ def _align_with_original_text(original_text: str, events: list[dict]) -> list[Ti
 def synthesize(text: str, voice: str, out_path: str) -> list[TimedChunk]:
     events = asyncio.run(_stream(text, voice, out_path))
     return _align_with_original_text(text, events)
+
+
+async def _stream_audio_only(text: str, voice: str) -> bytes:
+    communicate = edge_tts.Communicate(text, voice)
+    audio_bytes = bytearray()
+
+    try:
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                audio_bytes.extend(chunk["data"])
+    except Exception as exc:
+        raise TtsError(f"edge-tts streaming failed: {exc}") from exc
+
+    return bytes(audio_bytes)
+
+
+def synthesize_preview(text: str, voice: str) -> bytes:
+    """Short voice-sample synthesis with no WordBoundary alignment — used for
+    the "preview this voice" button, where only the audio itself matters."""
+    return asyncio.run(_stream_audio_only(text, voice))

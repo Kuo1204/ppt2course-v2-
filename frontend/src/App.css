@@ -292,16 +292,33 @@ input[type="number"] {
   white-space: nowrap;
 }
 
-.uploader .btn-mini {
+.btn-mini {
   font-family: var(--mono);
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   color: var(--accent);
+  background: none;
   border: 1px solid var(--accent);
   border-radius: 2px;
   padding: 5px 9px;
   flex-shrink: 0;
+  cursor: pointer;
+}
+
+.btn-mini:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.field-with-action {
+  display: flex;
+  gap: 8px;
+  align-items: stretch;
+}
+
+.field-with-action select {
+  flex: 1;
 }
 
 .thumbstrip {

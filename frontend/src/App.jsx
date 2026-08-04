@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import "./App.css";
-import { createJob, downloadUrl, getJobStatus } from "./api";
+import { createJob, downloadUrl, extractScriptText, fetchVoicePreview, getJobStatus } from "./api";
 import { parseNumberedScript } from "./scriptParser";
 
 const SCRIPT_MODES = [
@@ -536,6 +536,9 @@ function ScriptStep({
                     用「第1頁」「第一頁」這樣的標記分開每一頁講稿，系統會自動依標記分頁
                   </span>
                 </label>
+
+                <ScriptFileUpload onExtracted={setPasteText} />
+
                 <textarea
                   id="paste-script-input"
                   rows={10}
@@ -564,19 +567,53 @@ function ScriptStep({
 }
 
 function VoiceStep({ voice, setVoice, transition, setTransition }) {
+  const [previewState, setPreviewState] = useState("idle"); // idle | loading | error
+  const audioRef = useRef(null);
+
+  async function handlePreview() {
+    setPreviewState("loading");
+    try {
+      const blob = await fetchVoicePreview(voice);
+      const url = URL.createObjectURL(blob);
+      if (audioRef.current) audioRef.current.pause();
+      const audio = new Audio(url);
+      audioRef.current = audio;
+      audio.addEventListener("ended", () => URL.revokeObjectURL(url));
+      await audio.play();
+      setPreviewState("idle");
+    } catch {
+      setPreviewState("error");
+    }
+  }
+
   return (
     <>
       <CardHead eyebrow="Step 03" title="語音與轉場" />
       <div className="field-grid">
         <div className="field">
           <label htmlFor="voice-select">配音語者</label>
-          <select id="voice-select" value={voice} onChange={(e) => setVoice(e.target.value)}>
-            {VOICES.map((v) => (
-              <option key={v.value} value={v.value}>
-                {v.label}
-              </option>
-            ))}
-          </select>
+          <div className="field-with-action">
+            <select id="voice-select" value={voice} onChange={(e) => setVoice(e.target.value)}>
+              {VOICES.map((v) => (
+                <option key={v.value} value={v.value}>
+                  {v.label}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              className="btn-mini"
+              onClick={handlePreview}
+              disabled={previewState === "loading"}
+            >
+              {previewState === "loading" ? "載入中" : "▶ 預覽"}
+            </button>
+          </div>
+          {previewState === "error" && (
+            <p className="form-error" style={{ margin: "6px 0 0" }}>
+              語音預覽失敗，請稍後再試
+            </p>
+          )}
         </div>
         <div className="field">
           <label htmlFor="transition-select">轉場效果</label>
@@ -658,6 +695,42 @@ function FileField({ label, file, onChange, accept }) {
         <span className="filename">{file ? file.name : "未選擇"}</span>
         <span className="btn-mini">選擇</span>
       </div>
+    </div>
+  );
+}
+
+function ScriptFileUpload({ onExtracted }) {
+  const [extracting, setExtracting] = useState(false);
+  const [extractError, setExtractError] = useState(null);
+
+  async function handleChange(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    setExtracting(true);
+    setExtractError(null);
+    try {
+      const { text } = await extractScriptText(file);
+      onExtracted(text);
+    } catch (err) {
+      setExtractError(err.message);
+    } finally {
+      setExtracting(false);
+      e.target.value = "";
+    }
+  }
+
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <div className="uploader">
+        <input type="file" accept=".txt,.docx" onChange={handleChange} disabled={extracting} />
+        <span className="filename">{extracting ? "解析中..." : "或上傳講稿檔案 (.txt / .docx)"}</span>
+        <span className="btn-mini">選擇</span>
+      </div>
+      {extractError && (
+        <p className="form-error" style={{ margin: "8px 0 0" }}>
+          {extractError}
+        </p>
+      )}
     </div>
   );
 }
