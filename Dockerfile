@@ -11,8 +11,11 @@ COPY frontend/ ./
 RUN npm run build
 
 FROM python:3.12-slim AS runtime
+# fonts-noto-cjk provides the "Noto Sans CJK TC" family the subtitle burn-in
+# style names explicitly — without it libass falls back to a substitute font
+# per-glyph, which still renders correctly but not in the intended typeface.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg \
+    && apt-get install -y --no-install-recommends ffmpeg fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

@@ -36,11 +36,13 @@ const RESOLUTIONS = [
 ];
 
 const FONT_SIZES = [
-  { value: 36, label: "小 (36px)" },
-  { value: 48, label: "中 (48px)" },
-  { value: 60, label: "大 (60px)" },
-  { value: 72, label: "特大 (72px)" },
+  { value: 16, label: "小 (16px)" },
+  { value: 22, label: "中 (22px)" },
+  { value: 30, label: "大 (30px)" },
+  { value: 40, label: "特大 (40px)" },
 ];
+
+const TRANSITION_DURATIONS = [0, 300, 500, 800, 1000, 1500, 2000];
 
 const RATE_MIN = -50;
 const RATE_MAX = 100;
@@ -715,15 +717,18 @@ function VoiceStep({
         </div>
 
         <div className="field">
-          <label htmlFor="transition-ms-input">轉場時間（毫秒）</label>
-          <input
-            id="transition-ms-input"
-            type="number"
-            min="0"
-            step="100"
+          <label htmlFor="transition-ms-select">轉場時間</label>
+          <select
+            id="transition-ms-select"
             value={transitionDurationMs}
             onChange={(e) => setTransitionDurationMs(Number(e.target.value))}
-          />
+          >
+            {TRANSITION_DURATIONS.map((ms) => (
+              <option key={ms} value={ms}>
+                {(ms / 1000).toFixed(1).replace(/\.0$/, "")} 秒
+              </option>
+            ))}
+          </select>
         </div>
       </div>
     </>
@@ -856,7 +861,10 @@ function ReviewStep({
       ["講稿模式", modeLabel],
       ["配音語者", voiceLabel],
       ["語速 / 音量", `${formatPercent(voiceRate)} / ${formatPercent(voiceVolume)}`],
-      ["轉場效果", `${transitionLabel}（${transitionDurationMs} 毫秒）`],
+      [
+        "轉場效果",
+        `${transitionLabel}（${(transitionDurationMs / 1000).toFixed(1).replace(/\.0$/, "")} 秒）`,
+      ],
       ["解析度", resolutionLabel],
       ["字幕大小", fontSizeLabel],
       ["額外項目", extras.length ? extras.join("、") : "無"],

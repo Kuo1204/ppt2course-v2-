@@ -20,14 +20,16 @@ DEFAULT_TRANSITION = "fade"
 DEFAULT_TRANSITION_DURATION_MS = 500
 DEFAULT_RESOLUTION = (1920, 1080)
 DEFAULT_FPS = 30
-DEFAULT_FONT_SIZE = 48
+DEFAULT_FONT_SIZE = 22
 DEFAULT_LOGO_WIDTH = 160
 DEFAULT_LOGO_MARGIN = 24
 DEFAULT_BGM_VOLUME = 0.2
 
-# ASS BackColour alpha: 00=opaque .. FF=transparent. 0x33 ≈ 20% transparent
-# i.e. ~80% opaque black box, per the confirmed subtitle styling default.
-SUBTITLE_BACK_ALPHA = "33"
+# Ported from the user's earlier prototype: white text with a black outline
+# (no background box), fixed bottom margin regardless of resolution/font
+# size — matches their previously-configured look exactly.
+SUBTITLE_FONT_NAME = "Noto Sans CJK TC"
+SUBTITLE_MARGIN_V = 30
 
 
 class VideoComposeError(Exception):
@@ -153,8 +155,9 @@ def _audio_acrossfade_chain(n: int, transition_duration_ms: int) -> tuple[str, s
 def _subtitle_filter(srt_path: str, video_label: str, font_size: int) -> tuple[str, str]:
     escaped_path = _escape_ffmpeg_filter_path(srt_path)
     style = (
-        f"FontSize={font_size},PrimaryColour=&H00FFFFFF,"
-        f"BackColour=&H{SUBTITLE_BACK_ALPHA}000000,BorderStyle=3,Outline=0,Shadow=0"
+        f"FontName={SUBTITLE_FONT_NAME},FontSize={font_size},"
+        f"PrimaryColour=&HFFFFFF&,OutlineColour=&H000000&,"
+        f"BorderStyle=1,Outline=2,Shadow=0,MarginV={SUBTITLE_MARGIN_V}"
     )
     filt = f"[{video_label}]subtitles='{escaped_path}':force_style='{style}'[vsub]"
     return filt, "vsub"

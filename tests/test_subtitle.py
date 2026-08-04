@@ -1,261 +1,207 @@
+"""Ported from the original prototype's own self-test scenarios (its
+`if __name__ == "__main__"` block), adapted to pytest and to this module's
+TimedChunk-based generate_cues interface instead of operating on raw text
+or a parsed SRT string.
+"""
+
 from ppt2course.subtitle import (
-    SegmentationConfig,
+    MIN_GAP_MS,
+    PROTECTED_PHRASES,
     SubtitleCue,
     TimedChunk,
-    _display_width,
-    _segment_run,
     cues_to_srt,
-    find_protected_spans,
-    find_transition_word_offsets,
     generate_cues,
+    split_text_into_chunks,
+    strip_cue_punctuation,
+    wrap_subtitle_text,
 )
 
 
-def make_chunks(pieces, unit_ms=300, start_ms=0):
-    """pieces: a string (each char its own chunk) or a list of strings
-    (each element, possibly multi-char, becomes one atomic chunk)."""
-    return [
-        TimedChunk(
-            text=piece,
-            start_ms=start_ms + i * unit_ms,
-            end_ms=start_ms + (i + 1) * unit_ms,
-        )
-        for i, piece in enumerate(pieces)
-    ]
-
-
-def make_variable_chunks(pieces, durations_ms, start_ms=0):
+def _uniform_chunks(text: str, ms_per_char: int = 100, start_ms: int = 0) -> list[TimedChunk]:
     chunks = []
     t = start_ms
-    for piece, dur in zip(pieces, durations_ms):
-        chunks.append(TimedChunk(text=piece, start_ms=t, end_ms=t + dur))
-        t += dur
+    for ch in text:
+        chunks.append(TimedChunk(ch, t, t + ms_per_char))
+        t += ms_per_char
     return chunks
 
 
-# ---- _display_width ----
-
-def test_display_width_cjk_chars_are_2():
-    assert _display_width("中文字") == 6
+# ---------- split_text_into_chunks: tiered "Smart Sentence Split" ----------
 
 
-def test_display_width_ascii_chars_are_1():
-    assert _display_width("abc123") == 6
+def test_tiered_split_keeps_punctuation_at_segment_end_not_start():
+    text = "各位同仁大家好，歡迎參加本次教育訓練課程。今天我要來討論職場健康的定義，常見樣態，以及公司申訴機制辦法，希望大家都能建立正確的認知。"
+    chunks = split_text_into_chunks(text, max_chars=20)
+    assert "".join(chunks) == text
+    for c in chunks:
+        assert not c or c[0] not in "，。,、；;:.!?", f"punctuation must not open a segment: {c!r}"
 
 
-def test_display_width_mixed():
-    assert _display_width("中ab文") == 2 + 1 + 1 + 2
+def test_split_respects_target_length_when_no_punctuation_nearby():
+    text = "如果未進行帳戶核對，為保障個人資料隱私，將無法查詢個人相關履歷"
+    chunks = split_text_into_chunks(text, max_chars=18)
+    assert "".join(chunks) == text
+    assert all(len(c) <= 18 * 2 for c in chunks)
 
 
-def test_display_width_fullwidth_punctuation_is_2():
-    assert _display_width("，。！？") == 8
+# ---------- protected phrases: never split down the middle ----------
 
 
-# ---- find_protected_spans ----
-
-def test_finds_number_with_decimal_and_percent():
-    spans = find_protected_spans("圓周率是3.14159約等於50%喔")
-    matched = [("圓周率是3.14159約等於50%喔")[s:e] for s, e in spans]
-    assert "3.14159" in matched
-    assert "50%" in matched
-
-
-def test_finds_date_and_time():
-    spans = find_protected_spans("會議在2026-08-03的14:30開始")
-    text = "會議在2026-08-03的14:30開始"
-    matched = [text[s:e] for s, e in spans]
-    assert "2026-08-03" in matched
-    assert "14:30" in matched
+def test_protected_phrases_never_split_across_chunks():
+    text = "今天要說明公司制度以及職場健康相關的申訴機制與案例分析內容"
+    chunks = split_text_into_chunks(text, max_chars=12)
+    assert "".join(chunks) == text
+    for phrase in ["公司制度", "職場健康", "申訴機制", "案例分析"]:
+        assert any(phrase in c for c in chunks), f"protected phrase should stay intact: {phrase!r}"
 
 
-def test_finds_chinese_date():
-    text = "今天是2026年8月3日"
-    spans = find_protected_spans(text)
-    matched = [text[s:e] for s, e in spans]
-    assert "2026年8月3日" in matched
+def test_protected_phrase_avoided_even_with_no_punctuation_nearby():
+    text = "若未進行帳戶核對，為保障個人資料隱私，將無法查詢個人相關履歷，請務必使用員工保卡進行帳戶核對"
+    chunks = split_text_into_chunks(text, max_chars=18)
+    assert "".join(chunks) == text
+    for i in range(len(chunks) - 1):
+        assert not chunks[i].endswith("帳戶"), f"'帳戶核對' split apart: {chunks[i]!r}"
+        assert not chunks[i + 1].startswith("核對"), f"'帳戶核對' split apart: {chunks[i + 1]!r}"
 
 
-def test_finds_url_and_email():
-    text = "請參考https://example.com/page或寄信到test@example.com謝謝"
-    spans = find_protected_spans(text)
-    matched = [text[s:e] for s, e in spans]
-    assert "https://example.com/page" in matched
-    assert "test@example.com" in matched
+# ---------- orphan-merge: no tiny trailing fragments ----------
 
 
-def test_finds_english_abbreviation():
-    text = "請找Dr.陳醫生協助"
-    spans = find_protected_spans(text)
-    matched = [text[s:e] for s, e in spans]
-    assert "Dr." in matched
+def test_tiny_trailing_fragments_get_merged_into_neighbor():
+    text = "也可能因為案例分析和常見錯誤說明有問題"
+    chunks = split_text_into_chunks(text, max_chars=14)
+    assert "".join(chunks) == text
+    assert all(len(c) >= 4 for c in chunks)
 
 
-def test_no_protected_spans_in_plain_text():
-    assert find_protected_spans("今天天氣很好我們出去走走") == []
+# ---------- wrap_subtitle_text: in-cue 2-line wrap ----------
 
 
-# ---- find_transition_word_offsets ----
-
-def test_finds_transition_word_offset():
-    text = "今天很累但是我們還是去了"
-    offsets = find_transition_word_offsets(text, ("但是",))
-    assert offsets == {4}
+def test_wrap_subtitle_text_short_text_unchanged():
+    assert wrap_subtitle_text("今天介紹AI") == "今天介紹AI"
 
 
-def test_no_transition_word_found():
-    offsets = find_transition_word_offsets("今天天氣很好", ("但是", "然而"))
-    assert offsets == set()
+def test_wrap_subtitle_text_wraps_long_text_into_two_lines():
+    long_text = "今天我要介紹人工智慧的基本概念，並且說明它的應用場景"
+    wrapped = wrap_subtitle_text(long_text)
+    lines = wrapped.split("\n")
+    assert len(lines) == 2
+    assert lines[0] + lines[1] == long_text
 
 
-# ---- _segment_run: core DP behavior ----
-
-def test_segment_run_no_split_when_under_max_width():
-    chunks = make_chunks("大家好歡迎來到這堂課", unit_ms=300)  # width 20 <= 36
-    result = _segment_run(chunks, SegmentationConfig())
-    assert len(result) == 1
-    assert result[0] == chunks
+# ---------- strip_cue_punctuation ----------
 
 
-def test_segment_run_prefers_comma_over_plain_length_fallback():
-    # 21 CJK chars, width 42 (> 36). Comma at char index 9 (0-indexed).
-    text = "今天的天氣非常晴朗，我們決定出門去公園散步"
-    assert len(text) == 21
-    chunks = make_chunks(text, unit_ms=200)
-    result = _segment_run(chunks, SegmentationConfig())
-    assert [("".join(c.text for c in line)) for line in result] == [
-        "今天的天氣非常晴朗，",
-        "我們決定出門去公園散步",
-    ]
+def test_strip_cue_punctuation_removes_leading_and_trailing():
+    assert strip_cue_punctuation("，這是句子。") == "這是句子"
+    assert strip_cue_punctuation("這是句子") == "這是句子"
 
 
-def test_segment_run_prefers_transition_word_over_plain_length_fallback():
-    # 24 CJK chars, width 48 (> 36), no punctuation at all; "但是" starts at
-    # chunk index 10, aligned exactly to a chunk boundary.
-    text = "今天早上去爬山看日出但是後來下雨只好提前下山回家"
-    assert len(text) == 24
-    chunks = make_chunks(text, unit_ms=200)
-    result = _segment_run(chunks, SegmentationConfig())
-    assert [("".join(c.text for c in line)) for line in result] == [
-        "今天早上去爬山看日出",
-        "但是後來下雨只好提前下山回家",
-    ]
+# ---------- generate_cues: Phrase Reconstruction from fragmented WordBoundary chunks ----------
 
 
-def test_segment_run_avoids_splitting_inside_protected_number_span():
-    # Long run with "2024" embedded; the width-optimal cut point (28) falls
-    # on the 2nd digit if unprotected. Verify no resulting line breaks the
-    # number apart (each line either fully contains "2024" or not at all).
-    preamble = "甲乙丙丁戊己庚辛壬癸乙丙丁"  # 13 chars, width 26
-    suffix = "子丑寅卯辰巳午未申"  # 9 chars, width 18
-    text = preamble + "2024" + suffix
-    chunks = make_chunks(text, unit_ms=150)
-    result = _segment_run(chunks, SegmentationConfig())
-
-    lines_text = ["".join(c.text for c in line) for line in result]
-    assert "".join(lines_text) == text  # no chunk lost or duplicated
-    digit_fragment_lines = [t for t in lines_text if any(d in t for d in "2024")]
-    assert len(digit_fragment_lines) == 1
-    assert "2024" in digit_fragment_lines[0]
-
-
-def test_segment_run_cps_penalty_overrides_naive_comma_preference():
-    # A comma sits right after 2 very fast chunks; cutting there yields a
-    # tiny, absurdly-fast (cps>>12) segment. A plain length-fallback cut
-    # further in (no punctuation bonus) should win instead because the
-    # comma option is punished on both length-fit and CPS.
-    pieces = list("甲乙，") + list("子丑寅卯辰巳午未申庚辛壬癸酉戉亥")
-    durations = [50, 50, 50] + [300] * 17
-    chunks = make_variable_chunks(pieces, durations)
-    result = _segment_run(chunks, SegmentationConfig())
-
-    first_line_text = "".join(c.text for c in result[0])
-    assert first_line_text != "甲乙，"
-
-
-def test_segment_run_single_oversized_atomic_chunk_kept_whole():
+def test_generate_cues_reconstructs_text_split_across_multiple_timed_chunks():
     chunks = [
-        TimedChunk("一二三四五六七八九十甲乙丙丁戊己庚辛壬癸", 0, 1000),  # width 40 > 36
-        TimedChunk("下一段文字", 1000, 2000),
+        TimedChunk("今天", 0, 400),
+        TimedChunk("介紹", 400, 900),
+        TimedChunk("公司", 900, 1400),
+        TimedChunk("制度", 1400, 1800),
+        TimedChunk("。", 1800, 1800),
     ]
-    result = _segment_run(chunks, SegmentationConfig())
-    assert len(result) == 2
-    assert result[0][0].text == "一二三四五六七八九十甲乙丙丁戊己庚辛壬癸"
-    assert result[1][0].text == "下一段文字"
+    cues = generate_cues(chunks, max_chars=30)
+    assert len(cues) == 1
+    assert cues[0].text == "今天介紹公司制度"
+    assert cues[0].start_ms == 0
+    assert cues[0].end_ms == 1800
 
 
-# ---- generate_cues: end-to-end (hard breaks, merge, gap-trim, offset, empty) ----
+def test_generate_cues_splits_long_narration_into_multiple_cues():
+    text = "各位同仁大家好，歡迎參加本次教育訓練課程，今天我要來討論職場健康與工作環境的定義。"
+    chunks = _uniform_chunks(text, ms_per_char=100)
+    cues = generate_cues(chunks)
+    assert len(cues) > 1
+    assert "".join(c.text.replace("\n", "") for c in cues) != ""
+    for i in range(1, len(cues)):
+        assert cues[i].start_ms >= cues[i - 1].end_ms
 
-def test_generate_cues_empty_input_returns_empty_list():
+
+def test_generate_cues_strips_trailing_punctuation_from_every_cue():
+    text = "各位同仁大家好，歡迎參加本次教育訓練課程。今天我們要說明常見樣態，包含語言歧視，身體歧視，還有薪資管理相關規範。"
+    chunks = _uniform_chunks(text, ms_per_char=80)
+    cues = generate_cues(chunks)
+    trailing_punct = "，。,、；;:.!?"
+    for c in cues:
+        last_char = c.text.replace("\n", "")[-1]
+        assert last_char not in trailing_punct, f"cue should not end with punctuation: {c.text!r}"
+
+
+def test_generate_cues_splits_a_single_overlong_sentence_into_several_cues():
+    text = (
+        "這個基本觀念，包含新制度細節，哪些行為可能屬於職場健康的常見樣態，"
+        "以及申訴機制與教育訓練說明。"
+    )
+    chunks = _uniform_chunks(text, ms_per_char=90)
+    cues = generate_cues(chunks, max_chars=18)
+    assert len(cues) > 1
+    for i in range(1, len(cues)):
+        assert cues[i].start_ms >= cues[i - 1].end_ms - 1  # contiguous, never overlapping
+    assert cues[0].start_ms == 0
+    assert cues[-1].end_ms == len(text) * 90
+
+
+def test_generate_cues_applies_start_offset():
+    chunks = _uniform_chunks("大家好", ms_per_char=100)
+    cues = generate_cues(chunks, start_offset_ms=5000)
+    assert cues[0].start_ms == 5000
+
+
+def test_generate_cues_empty_chunks_returns_empty_list():
     assert generate_cues([]) == []
 
 
-def test_hard_break_strips_period_keeps_question_mark_and_trims_gap():
-    chunks = make_chunks("你好嗎？我很好。", unit_ms=300)
-    cues = generate_cues(chunks)
-    assert len(cues) == 2
-    assert (cues[0].start_ms, cues[0].end_ms, cues[0].text) == (0, 1100, "你好嗎？")
-    assert (cues[1].start_ms, cues[1].end_ms, cues[1].text) == (1200, 2400, "我很好")
+def test_generate_cues_each_cue_is_a_standalone_segment_not_cumulative():
+    text = "今天要介紹職場健康推動政策，包含常見案例分析與申訴機制說明，最後開放大家提問討論。"
+    chunks = _uniform_chunks(text, ms_per_char=70)
+    cues = generate_cues(chunks, max_chars=18)
+    for i in range(1, len(cues)):
+        assert not cues[i].text.replace("\n", "").startswith(cues[i - 1].text.replace("\n", ""))
 
 
-def test_short_cue_merges_with_next_across_hard_break_when_under_min_duration():
-    chunks = make_chunks("你好。謝謝。", unit_ms=200)
-    cues = generate_cues(chunks)
-    assert len(cues) == 1
-    assert (cues[0].start_ms, cues[0].end_ms, cues[0].text) == (0, 1200, "你好。謝謝")
+# ---------- cues_to_srt ----------
 
 
-def test_short_cue_does_not_merge_when_merge_would_exceed_max_width():
-    # Each line is 17 chars (width 34), under 36 alone, but merged would be
-    # width 68 > 36, so must stay separate even though both are short.
-    line1 = "一二三四五六七八九十甲乙丙丁戊己庚。"
-    line2 = "子丑寅卯辰巳午未申酉戌亥壬癸辛庚己。"
-    chunks = make_chunks(line1 + line2, unit_ms=50)
-    cues = generate_cues(chunks)
-    assert len(cues) == 2
+def test_cues_to_srt_formats_sequential_blocks_with_crlf():
+    cues = [
+        SubtitleCue(1, 0, 1500, "大家好"),
+        SubtitleCue(2, 1500, 3200, "歡迎收看"),
+    ]
+    srt = cues_to_srt(cues)
+    assert srt == (
+        "1\r\n00:00:00,000 --> 00:00:01,500\r\n大家好\r\n\r\n"
+        "2\r\n00:00:01,500 --> 00:00:03,200\r\n歡迎收看"
+    )
 
 
-def test_kept_hard_break_immediately_after_width_limit_may_overshoot():
-    # 18 CJK chars (width 36, exactly at the limit), followed by a kept
-    # terminator (？) -> resulting line is width 38, one unit over.
-    text = "一二三四五六七八九十甲乙丙丁戊己庚辛？"
-    chunks = make_chunks(text, unit_ms=100)
-    cues = generate_cues(chunks)
-    assert len(cues) == 1
-    assert cues[0].text == text
+def test_cues_to_srt_preserves_embedded_newline_for_two_line_cues():
+    cues = [SubtitleCue(1, 0, 2000, "第一行\n第二行")]
+    srt = cues_to_srt(cues)
+    assert "第一行\n第二行" in srt
 
-
-def test_start_offset_shifts_all_timestamps():
-    chunks = make_chunks("大家好歡迎來到這堂課", unit_ms=300)
-    cues = generate_cues(chunks, start_offset_ms=5000)
-    assert cues[0].start_ms == 5000
-    assert cues[0].end_ms == 8000
-
-
-# ---- cues_to_srt (unaffected by segmentation changes) ----
 
 def test_cues_to_srt_empty_list_returns_empty_string():
     assert cues_to_srt([]) == ""
 
 
-def test_cues_to_srt_basic_single_cue_format():
-    cues = [SubtitleCue(index=1, start_ms=0, end_ms=3000, text="大家好")]
-    srt = cues_to_srt(cues)
-    assert srt == "1\r\n00:00:00,000 --> 00:00:03,000\r\n大家好"
+# ---------- module-level constants video.py depends on ----------
 
 
-def test_cues_to_srt_multiple_cues_sequential_index_and_blank_line_separator():
-    cues = [
-        SubtitleCue(index=1, start_ms=0, end_ms=1000, text="第一句"),
-        SubtitleCue(index=2, start_ms=1100, end_ms=2500, text="第二句"),
+def test_min_gap_ms_exported_for_cross_slide_reconciliation():
+    assert isinstance(MIN_GAP_MS, int)
+    assert MIN_GAP_MS > 0
+
+
+def test_protected_phrases_list_matches_the_original_prototype():
+    assert PROTECTED_PHRASES == [
+        "職場健康", "工作環境", "案例分析", "身心健康", "申訴機制",
+        "薪資管理", "教育訓練", "公司制度", "工作要求",
     ]
-    srt = cues_to_srt(cues)
-    assert srt == (
-        "1\r\n00:00:00,000 --> 00:00:01,000\r\n第一句\r\n\r\n"
-        "2\r\n00:00:01,100 --> 00:00:02,500\r\n第二句"
-    )
-
-
-def test_cues_to_srt_timestamp_formatting_includes_hours():
-    cues = [SubtitleCue(index=1, start_ms=3661234, end_ms=3661999, text="test")]
-    srt = cues_to_srt(cues)
-    assert "01:01:01,234 --> 01:01:01,999" in srt
