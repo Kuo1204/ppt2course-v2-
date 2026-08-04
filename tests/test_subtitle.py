@@ -13,7 +13,6 @@ from ppt2course.subtitle import (
     generate_cues,
     split_text_into_chunks,
     strip_cue_punctuation,
-    wrap_subtitle_text,
 )
 
 
@@ -77,18 +76,6 @@ def test_tiny_trailing_fragments_get_merged_into_neighbor():
 # ---------- wrap_subtitle_text: in-cue 2-line wrap ----------
 
 
-def test_wrap_subtitle_text_short_text_unchanged():
-    assert wrap_subtitle_text("今天介紹AI") == "今天介紹AI"
-
-
-def test_wrap_subtitle_text_wraps_long_text_into_two_lines():
-    long_text = "今天我要介紹人工智慧的基本概念，並且說明它的應用場景"
-    wrapped = wrap_subtitle_text(long_text)
-    lines = wrapped.split("\n")
-    assert len(lines) == 2
-    assert lines[0] + lines[1] == long_text
-
-
 # ---------- strip_cue_punctuation ----------
 
 
@@ -131,8 +118,20 @@ def test_generate_cues_strips_trailing_punctuation_from_every_cue():
     cues = generate_cues(chunks)
     trailing_punct = "，。,、；;:.!?"
     for c in cues:
-        last_char = c.text.replace("\n", "")[-1]
+        last_char = c.text[-1]
         assert last_char not in trailing_punct, f"cue should not end with punctuation: {c.text!r}"
+
+
+def test_generate_cues_never_wraps_to_a_second_line():
+    # at max_chars=14 this text's protected-phrase avoidance genuinely
+    # produces a 16-char chunk (over budget) — previously this triggered
+    # wrap_subtitle_text's 2-line wrap. It must now stay one line.
+    text = "職場健康的相關議題非常值得我們深入探討與研究內容包含很多面向"
+    chunks = _uniform_chunks(text, ms_per_char=100)
+    cues = generate_cues(chunks, max_chars=14)
+    assert any(len(c.text) > 14 for c in cues), "test setup should still produce an over-budget cue"
+    for c in cues:
+        assert "\n" not in c.text, f"cue must stay a single line: {c.text!r}"
 
 
 def test_generate_cues_splits_a_single_overlong_sentence_into_several_cues():

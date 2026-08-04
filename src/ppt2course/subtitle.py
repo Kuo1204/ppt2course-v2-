@@ -15,9 +15,8 @@ window, prefer breaking after a sentence-ending mark ("。！？!?"), then a
 clause mark ("，、;:"), then a comma ("，。"); if none exist in-window,
 search up to 2x the window for the nearest one; only hard-cut on character
 count as a last resort. PROTECTED_PHRASES may never be split down the
-middle. Cues over max_chars after splitting (only possible when a
-protected phrase forces one) get wrapped into two display lines by
-wrap_subtitle_text.
+middle — every cue stays a single display line even when protecting a
+phrase pushes it past max_chars, rather than wrapping onto a second line.
 """
 
 import re
@@ -39,7 +38,6 @@ _TIER3_PATTERN = re.compile(r"(?<=[，。])")
 
 _TRAILING_PUNCT_PATTERN = re.compile(r"[，。,、；;:.!?]+$")
 _LEADING_PUNCT_PATTERN = re.compile(r"^[，。,、；;:.!?]+")
-_LINE_BREAK_AFTER_CHARS = frozenset("，。,、；!? ")
 
 
 @dataclass(frozen=True)
@@ -165,33 +163,6 @@ def _merge_tiny_trailing_chunks(chunks: list[str], min_chars: int = 4) -> list[s
     return merged
 
 
-def wrap_subtitle_text(text: str, max_line_chars: int = CUE_TARGET_MAX_CHARS) -> str:
-    text = (text or "").strip()
-    if len(text) <= max_line_chars:
-        return text
-
-    mid = len(text) // 2
-    best_pos = None
-    for offset in range(0, len(text)):
-        for pos in (mid + offset, mid - offset):
-            if (
-                0 < pos < len(text)
-                and text[pos - 1] in _LINE_BREAK_AFTER_CHARS
-                and not _is_protected_break(text, pos)
-            ):
-                best_pos = pos
-                break
-        if best_pos:
-            break
-
-    if best_pos is None:
-        best_pos = _shift_off_protected_phrase(text, min(max_line_chars, len(text) - 1))
-
-    line1 = text[:best_pos].strip()
-    line2 = text[best_pos:].strip()
-    return f"{line1}\n{line2}" if line2 else line1
-
-
 def _char_to_time(char_positions: list[tuple[int, int]], chunks: list[TimedChunk], char_pos: int) -> float:
     for i, (s, e) in enumerate(char_positions):
         if s <= char_pos <= e:
@@ -235,7 +206,7 @@ def generate_cues(
         start_t = _char_to_time(char_positions, chunks, chunk_start_char)
         end_t = _char_to_time(char_positions, chunks, chunk_end_char)
 
-        display_text = wrap_subtitle_text(strip_cue_punctuation(chunk_text), max_line_chars=max_chars)
+        display_text = strip_cue_punctuation(chunk_text)
         if not display_text:
             continue
 

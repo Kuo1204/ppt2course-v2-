@@ -1,4 +1,5 @@
 import io
+from urllib.parse import quote
 
 from fastapi.testclient import TestClient
 
@@ -147,6 +148,27 @@ def test_download_file_after_done(tmp_path):
     response = client.get(f"/api/jobs/{job_id}/download/mp4")
     assert response.status_code == 200
     assert response.content == b"video-bytes"
+
+
+def test_download_file_uses_the_course_name_not_a_generic_browser_filename(tmp_path):
+    # FileResponse without an explicit filename= has no Content-Disposition
+    # filename, so the browser falls back to a generic name like "mp4 (1).mp4"
+    # derived from the URL — not the user's chosen course name.
+    out_file = tmp_path / "試作影片.mp4"
+    out_file.write_bytes(b"video-bytes")
+
+    def fake_pipeline(**kwargs):
+        return {"mp4": str(out_file)}
+
+    client, manager = _make_client(fake_pipeline, tmp_path)
+    job_id = client.post("/api/jobs", data=_upload_form(), files=_upload_files()).json()["job_id"]
+    manager.process_next()
+
+    response = client.get(f"/api/jobs/{job_id}/download/mp4")
+    assert response.status_code == 200
+    content_disposition = response.headers["content-disposition"]
+    # non-ASCII filenames are RFC 5987 percent-encoded in the header
+    assert quote("試作影片.mp4") in content_disposition
 
 
 def test_download_before_done_returns_404(tmp_path):

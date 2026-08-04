@@ -183,7 +183,8 @@ def create_app(
             raise HTTPException(status_code=404, detail="file not available")
         if filetype not in ALLOWED_DOWNLOAD_TYPES or filetype not in job.result:
             raise HTTPException(status_code=404, detail="file not available")
-        return FileResponse(job.result[filetype])
+        path = job.result[filetype]
+        return FileResponse(path, filename=os.path.basename(path))
 
     @app.post("/api/extract-script-text")
     async def extract_script_text(file: UploadFile = File(...)):
