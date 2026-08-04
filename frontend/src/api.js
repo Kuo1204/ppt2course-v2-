@@ -1,4 +1,7 @@
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+// Empty by default = same-origin relative requests, which is what a combined
+// FastAPI-serves-the-frontend deployment needs. Dev overrides this to point
+// at a separately running backend (see .env.development).
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "";
 
 export async function createJob(formData) {
   const response = await fetch(`${API_BASE_URL}/api/jobs`, {

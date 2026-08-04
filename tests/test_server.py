@@ -9,7 +9,7 @@ from ppt2course.server import create_app
 
 def _make_client(pipeline_fn, tmp_path):
     manager = JobManager(pipeline_fn=pipeline_fn, auto_start=False)
-    app = create_app(job_manager=manager, data_root=str(tmp_path / "data"))
+    app = create_app(job_manager=manager, data_root=str(tmp_path / "data"), frontend_dist=None)
     return TestClient(app), manager
 
 
@@ -144,6 +144,69 @@ def test_download_unknown_filetype_returns_404(tmp_path):
     manager.process_next()
 
     response = client.get(f"/api/jobs/{job_id}/download/exe")
+    assert response.status_code == 404
+
+
+def test_serves_built_frontend_index_at_root(tmp_path):
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    (dist_dir / "index.html").write_text("<html>PPT2COURSE_FRONTEND</html>", encoding="utf-8")
+
+    manager = JobManager(pipeline_fn=lambda **kwargs: {}, auto_start=False)
+    app = create_app(
+        job_manager=manager, data_root=str(tmp_path / "data"), frontend_dist=str(dist_dir)
+    )
+    client = TestClient(app)
+
+    response = client.get("/")
+    assert response.status_code == 200
+    assert "PPT2COURSE_FRONTEND" in response.text
+
+
+def test_serves_built_frontend_static_assets(tmp_path):
+    dist_dir = tmp_path / "dist"
+    assets_dir = dist_dir / "assets"
+    assets_dir.mkdir(parents=True)
+    (dist_dir / "index.html").write_text("<html></html>", encoding="utf-8")
+    (assets_dir / "app.js").write_text("console.log('hi')", encoding="utf-8")
+
+    manager = JobManager(pipeline_fn=lambda **kwargs: {}, auto_start=False)
+    app = create_app(
+        job_manager=manager, data_root=str(tmp_path / "data"), frontend_dist=str(dist_dir)
+    )
+    client = TestClient(app)
+
+    response = client.get("/assets/app.js")
+    assert response.status_code == 200
+    assert "console.log" in response.text
+
+
+def test_api_routes_still_work_when_frontend_is_mounted(tmp_path):
+    dist_dir = tmp_path / "dist"
+    dist_dir.mkdir()
+    (dist_dir / "index.html").write_text("<html></html>", encoding="utf-8")
+
+    manager = JobManager(pipeline_fn=lambda **kwargs: {}, auto_start=False)
+    app = create_app(
+        job_manager=manager, data_root=str(tmp_path / "data"), frontend_dist=str(dist_dir)
+    )
+    client = TestClient(app)
+
+    response = client.get("/api/jobs/does-not-exist")
+    assert response.status_code == 404
+    assert response.json() == {"detail": "job not found"}
+
+
+def test_missing_frontend_dist_does_not_crash_app_creation(tmp_path):
+    manager = JobManager(pipeline_fn=lambda **kwargs: {}, auto_start=False)
+    app = create_app(
+        job_manager=manager,
+        data_root=str(tmp_path / "data"),
+        frontend_dist=str(tmp_path / "no-such-dir"),
+    )
+    client = TestClient(app)
+
+    response = client.get("/")
     assert response.status_code == 404
 
 

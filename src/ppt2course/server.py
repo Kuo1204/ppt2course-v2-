@@ -10,10 +10,12 @@ response.
 import json
 import os
 import uuid
+from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from ppt2course.jobs import JobManager, JobStatus
 from ppt2course.script_gen import DEFAULT_GEMINI_MODEL, ScriptMode
@@ -29,10 +31,18 @@ from ppt2course.video import (
 )
 
 DEFAULT_DATA_ROOT = os.environ.get("PPT2COURSE_DATA_ROOT", "data/jobs")
+# src/ppt2course/server.py -> parents[2] is the project root, where `frontend/` lives.
+DEFAULT_FRONTEND_DIST = os.environ.get(
+    "PPT2COURSE_FRONTEND_DIST", str(Path(__file__).resolve().parents[2] / "frontend" / "dist")
+)
 ALLOWED_DOWNLOAD_TYPES = {"mp4", "srt", "docx"}
 
 
-def create_app(job_manager: JobManager | None = None, data_root: str = DEFAULT_DATA_ROOT) -> FastAPI:
+def create_app(
+    job_manager: JobManager | None = None,
+    data_root: str = DEFAULT_DATA_ROOT,
+    frontend_dist: str | None = DEFAULT_FRONTEND_DIST,
+) -> FastAPI:
     app = FastAPI(title="PPT2Course AI")
     app.state.job_manager = job_manager if job_manager is not None else JobManager()
     app.state.data_root = data_root
@@ -154,6 +164,11 @@ def create_app(job_manager: JobManager | None = None, data_root: str = DEFAULT_D
         if filetype not in ALLOWED_DOWNLOAD_TYPES or filetype not in job.result:
             raise HTTPException(status_code=404, detail="file not available")
         return FileResponse(job.result[filetype])
+
+    # Mounted last so the /api/* routes above always match first. Serves the
+    # built React SPA (npm run build in frontend/) for a single-deployment setup.
+    if frontend_dist and os.path.isdir(frontend_dist):
+        app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="frontend")
 
     return app
 

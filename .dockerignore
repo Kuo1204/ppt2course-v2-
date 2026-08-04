@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+tests/
+data/
+frontend/node_modules/
+frontend/dist/
+.git/
