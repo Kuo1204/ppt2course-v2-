@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from ppt2course.jobs import JobManager, JobStatus
 from ppt2course.script_extract import ScriptExtractionError, extract_text_from_file
 from ppt2course.script_gen import DEFAULT_GEMINI_MODEL, ScriptMode
-from ppt2course.tts import TtsError, synthesize_preview
+from ppt2course.tts import DEFAULT_RATE, DEFAULT_VOLUME, TtsError, synthesize_preview
 from ppt2course.video import (
     DEFAULT_BGM_VOLUME,
     DEFAULT_FONT_SIZE,
@@ -76,6 +76,8 @@ def create_app(
         images: list[UploadFile] = File(...),
         script_mode: str = Form(...),
         voice: str = Form(...),
+        rate: str = Form(DEFAULT_RATE),
+        volume: str = Form(DEFAULT_VOLUME),
         base_name: str = Form("課程"),
         texts: str | None = Form(None),
         gemini_api_key: str | None = Form(None),
@@ -133,6 +135,8 @@ def create_app(
             base_name=base_name,
             script_mode=mode,
             voice=voice,
+            voice_rate=rate,
+            voice_volume=volume,
             texts=parsed_texts,
             gemini_api_key=gemini_api_key,
             gemini_model=gemini_model,
@@ -191,19 +195,20 @@ def create_app(
         return {"text": text}
 
     @app.get("/api/voice-preview/{voice}")
-    def voice_preview(voice: str):
+    def voice_preview(voice: str, rate: str = DEFAULT_RATE, volume: str = DEFAULT_VOLUME):
         sample_text = VOICE_PREVIEW_SAMPLES.get(voice)
         if sample_text is None:
             raise HTTPException(status_code=400, detail=f"unsupported voice: {voice}")
 
-        cache: dict[str, bytes] = app.state.voice_preview_cache
-        if voice not in cache:
+        cache: dict[tuple[str, str, str], bytes] = app.state.voice_preview_cache
+        cache_key = (voice, rate, volume)
+        if cache_key not in cache:
             try:
-                cache[voice] = voice_preview_fn(sample_text, voice)
+                cache[cache_key] = voice_preview_fn(sample_text, voice, rate=rate, volume=volume)
             except TtsError as exc:
                 raise HTTPException(status_code=502, detail=f"voice preview failed: {exc}") from exc
 
-        return Response(content=cache[voice], media_type="audio/mpeg")
+        return Response(content=cache[cache_key], media_type="audio/mpeg")
 
     # Mounted last so the /api/* routes above always match first. Serves the
     # built React SPA (npm run build in frontend/) for a single-deployment setup.

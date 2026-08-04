@@ -259,6 +259,12 @@ input[type="number"] {
   font-variant-numeric: tabular-nums;
 }
 
+input[type="range"] {
+  accent-color: var(--accent);
+  width: 100%;
+  margin-top: 4px;
+}
+
 /* ---------- uploader ---------- */
 .uploader {
   position: relative;
@@ -638,6 +644,26 @@ input[type="number"] {
 .chip .ext {
   color: var(--state-done);
   font-weight: 700;
+}
+
+.qr-block {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 16px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  width: fit-content;
+}
+
+.qr-block canvas {
+  display: block;
+  border-radius: 2px;
+}
+
+.qr-block .status-caption {
+  max-width: 22ch;
 }
 
 .error-msg {

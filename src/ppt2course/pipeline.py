@@ -17,7 +17,7 @@ from ppt2course.script_gen import (
     ScriptMode,
     generate_script,
 )
-from ppt2course.tts import TtsError, synthesize
+from ppt2course.tts import DEFAULT_RATE, DEFAULT_VOLUME, TtsError, synthesize
 from ppt2course.upload import PptParseError, parse_ppt
 from ppt2course.video import (
     DEFAULT_BGM_VOLUME,
@@ -61,6 +61,8 @@ def run_pipeline(
     base_name: str,
     script_mode: ScriptMode,
     voice: str,
+    voice_rate: str = DEFAULT_RATE,
+    voice_volume: str = DEFAULT_VOLUME,
     texts: list[str] | None = None,
     gemini_api_key: str | None = None,
     gemini_model: str = DEFAULT_GEMINI_MODEL,
@@ -104,7 +106,7 @@ def run_pipeline(
 
         if script_text.strip():
             try:
-                chunks = synthesize(script_text, voice, audio_path)
+                chunks = synthesize(script_text, voice, audio_path, rate=voice_rate, volume=voice_volume)
             except TtsError as exc:
                 raise PipelineError(
                     f"TTS synthesis failed for slide {slide.index}: {exc}"

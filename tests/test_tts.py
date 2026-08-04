@@ -34,11 +34,13 @@ def audio(data: bytes):
     return {"type": "audio", "data": data}
 
 
-def _patched(chunks, **kwargs):
-    return patch(
-        "ppt2course.tts.edge_tts.Communicate",
-        lambda text, voice, boundary=None: FakeCommunicate(chunks, **kwargs),
-    )
+def _patched(chunks, calls=None, **kwargs):
+    def factory(text, voice, boundary=None, rate=None, volume=None):
+        if calls is not None:
+            calls.append({"text": text, "voice": voice, "rate": rate, "volume": volume})
+        return FakeCommunicate(chunks, **kwargs)
+
+    return patch("ppt2course.tts.edge_tts.Communicate", factory)
 
 
 def test_writes_concatenated_audio_bytes_to_out_path(tmp_path):
@@ -131,3 +133,32 @@ def test_synthesize_preview_raises_tts_error_on_stream_failure():
     with _patched(chunks, raise_during_stream=True):
         with pytest.raises(TtsError):
             synthesize_preview("你好", "zh-TW-HsiaoChenNeural")
+
+
+def test_synthesize_defaults_to_zero_rate_and_volume(tmp_path):
+    calls = []
+    chunks = [audio(b"abc"), word_boundary("你", 0, 200)]
+    with _patched(chunks, calls=calls):
+        synthesize("你", "zh-TW-HsiaoChenNeural", str(tmp_path / "out.mp3"))
+    assert calls[0]["rate"] == "+0%"
+    assert calls[0]["volume"] == "+0%"
+
+
+def test_synthesize_forwards_custom_rate_and_volume(tmp_path):
+    calls = []
+    chunks = [audio(b"abc"), word_boundary("你", 0, 200)]
+    with _patched(chunks, calls=calls):
+        synthesize(
+            "你", "zh-TW-HsiaoChenNeural", str(tmp_path / "out.mp3"), rate="+20%", volume="-10%"
+        )
+    assert calls[0]["rate"] == "+20%"
+    assert calls[0]["volume"] == "-10%"
+
+
+def test_synthesize_preview_forwards_custom_rate_and_volume():
+    calls = []
+    chunks = [audio(b"abc")]
+    with _patched(chunks, calls=calls):
+        synthesize_preview("你好", "zh-TW-HsiaoChenNeural", rate="+15%", volume="+5%")
+    assert calls[0]["rate"] == "+15%"
+    assert calls[0]["volume"] == "+5%"

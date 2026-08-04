@@ -46,8 +46,15 @@ export async function extractScriptText(file) {
   return response.json();
 }
 
-export async function fetchVoicePreview(voice) {
-  const response = await fetch(`${API_BASE_URL}/api/voice-preview/${encodeURIComponent(voice)}`);
+export async function fetchVoicePreview(voice, rate, volume) {
+  const params = new URLSearchParams();
+  if (rate) params.set("rate", rate);
+  if (volume) params.set("volume", volume);
+  const query = params.toString() ? `?${params.toString()}` : "";
+
+  const response = await fetch(
+    `${API_BASE_URL}/api/voice-preview/${encodeURIComponent(voice)}${query}`
+  );
 
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));

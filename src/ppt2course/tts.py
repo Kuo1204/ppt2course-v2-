@@ -14,6 +14,8 @@ import edge_tts
 from ppt2course.subtitle import TimedChunk
 
 TICKS_PER_MS = 10_000
+DEFAULT_RATE = "+0%"
+DEFAULT_VOLUME = "+0%"
 
 
 class TtsError(Exception):
@@ -24,8 +26,10 @@ def _ticks_to_ms(ticks: int) -> int:
     return ticks // TICKS_PER_MS
 
 
-async def _stream(text: str, voice: str, out_path: str) -> list[dict]:
-    communicate = edge_tts.Communicate(text, voice, boundary="WordBoundary")
+async def _stream(
+    text: str, voice: str, out_path: str, rate: str = DEFAULT_RATE, volume: str = DEFAULT_VOLUME
+) -> list[dict]:
+    communicate = edge_tts.Communicate(text, voice, boundary="WordBoundary", rate=rate, volume=volume)
     audio_bytes = bytearray()
     events: list[dict] = []
 
@@ -73,13 +77,17 @@ def _align_with_original_text(original_text: str, events: list[dict]) -> list[Ti
     return chunks
 
 
-def synthesize(text: str, voice: str, out_path: str) -> list[TimedChunk]:
-    events = asyncio.run(_stream(text, voice, out_path))
+def synthesize(
+    text: str, voice: str, out_path: str, rate: str = DEFAULT_RATE, volume: str = DEFAULT_VOLUME
+) -> list[TimedChunk]:
+    events = asyncio.run(_stream(text, voice, out_path, rate=rate, volume=volume))
     return _align_with_original_text(text, events)
 
 
-async def _stream_audio_only(text: str, voice: str) -> bytes:
-    communicate = edge_tts.Communicate(text, voice)
+async def _stream_audio_only(
+    text: str, voice: str, rate: str = DEFAULT_RATE, volume: str = DEFAULT_VOLUME
+) -> bytes:
+    communicate = edge_tts.Communicate(text, voice, rate=rate, volume=volume)
     audio_bytes = bytearray()
 
     try:
@@ -92,7 +100,9 @@ async def _stream_audio_only(text: str, voice: str) -> bytes:
     return bytes(audio_bytes)
 
 
-def synthesize_preview(text: str, voice: str) -> bytes:
+def synthesize_preview(
+    text: str, voice: str, rate: str = DEFAULT_RATE, volume: str = DEFAULT_VOLUME
+) -> bytes:
     """Short voice-sample synthesis with no WordBoundary alignment — used for
     the "preview this voice" button, where only the audio itself matters."""
-    return asyncio.run(_stream_audio_only(text, voice))
+    return asyncio.run(_stream_audio_only(text, voice, rate=rate, volume=volume))

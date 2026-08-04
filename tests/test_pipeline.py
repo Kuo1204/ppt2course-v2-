@@ -202,3 +202,28 @@ def test_happy_path_returns_export_outputs_result(tmp_path):
     assert mock_compose.call_args.kwargs["bgm_path"] == "bgm.mp3"
     mock_export.assert_called_once()
     assert mock_export.call_args[0][2] == ["講稿一", "講稿二"]
+
+
+def test_forwards_voice_rate_and_volume_to_synthesize(tmp_path):
+    slides = _slides(1)
+    with patch("ppt2course.pipeline.parse_ppt", return_value=slides):
+        with patch("ppt2course.pipeline.generate_script", return_value=["講稿"]):
+            with patch("ppt2course.pipeline.clean_script", side_effect=lambda t: t):
+                with patch(
+                    "ppt2course.pipeline.synthesize",
+                    return_value=[TimedChunk("x", 0, 1000)],
+                ) as mock_synth:
+                    with patch("ppt2course.pipeline.compose_video"):
+                        with patch(
+                            "ppt2course.pipeline.export_outputs",
+                            return_value={"mp4": "a", "srt": "b", "docx": "c"},
+                        ):
+                            run_pipeline(
+                                "deck.pptx", ["img1.png"],
+                                str(tmp_path / "work"), str(tmp_path / "out"), "課程",
+                                ScriptMode.NOTES, "zh-TW-HsiaoChenNeural",
+                                voice_rate="+20%", voice_volume="-10%",
+                            )
+
+    assert mock_synth.call_args.kwargs["rate"] == "+20%"
+    assert mock_synth.call_args.kwargs["volume"] == "-10%"

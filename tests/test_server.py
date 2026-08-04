@@ -53,6 +53,27 @@ def test_create_job_saves_uploads_and_returns_job_id(tmp_path):
     assert os.path.exists(kwargs["image_paths"][0])
 
 
+def test_create_job_forwards_voice_rate_and_volume(tmp_path):
+    calls = []
+
+    def fake_pipeline(**kwargs):
+        calls.append(kwargs)
+        return {}
+
+    client, manager = _make_client(fake_pipeline, tmp_path)
+
+    client.post(
+        "/api/jobs",
+        data=_upload_form(rate="+20%", volume="-10%", font_size="60"),
+        files=_upload_files(),
+    )
+    manager.process_next()
+
+    assert calls[0]["voice_rate"] == "+20%"
+    assert calls[0]["voice_volume"] == "-10%"
+    assert calls[0]["font_size"] == 60
+
+
 def test_get_job_status_queued_before_processing(tmp_path):
     client, manager = _make_client(lambda **kwargs: {}, tmp_path)
 
@@ -239,8 +260,8 @@ def test_extract_script_text_rejects_unsupported_extension(tmp_path):
 def test_voice_preview_returns_audio_and_caches_by_voice(tmp_path):
     calls = []
 
-    def fake_preview(text, voice):
-        calls.append((text, voice))
+    def fake_preview(text, voice, rate=None, volume=None):
+        calls.append((text, voice, rate, volume))
         return b"fake-mp3-bytes"
 
     manager = JobManager(pipeline_fn=lambda **kwargs: {}, auto_start=False)
@@ -269,7 +290,7 @@ def test_voice_preview_rejects_unknown_voice(tmp_path):
         job_manager=manager,
         data_root=str(tmp_path / "data"),
         frontend_dist=None,
-        voice_preview_fn=lambda text, voice: b"",
+        voice_preview_fn=lambda text, voice, rate=None, volume=None: b"",
     )
     client = TestClient(app)
 
@@ -278,7 +299,7 @@ def test_voice_preview_rejects_unknown_voice(tmp_path):
 
 
 def test_voice_preview_wraps_tts_error(tmp_path):
-    def failing_preview(text, voice):
+    def failing_preview(text, voice, rate=None, volume=None):
         raise TtsError("edge-tts streaming failed: network error")
 
     manager = JobManager(pipeline_fn=lambda **kwargs: {}, auto_start=False)
@@ -292,6 +313,32 @@ def test_voice_preview_wraps_tts_error(tmp_path):
 
     response = client.get("/api/voice-preview/zh-TW-HsiaoChenNeural")
     assert response.status_code == 502
+
+
+def test_voice_preview_forwards_rate_and_volume_and_caches_separately(tmp_path):
+    calls = []
+
+    def fake_preview(text, voice, rate=None, volume=None):
+        calls.append((voice, rate, volume))
+        return f"{rate}|{volume}".encode()
+
+    manager = JobManager(pipeline_fn=lambda **kwargs: {}, auto_start=False)
+    app = create_app(
+        job_manager=manager,
+        data_root=str(tmp_path / "data"),
+        frontend_dist=None,
+        voice_preview_fn=fake_preview,
+    )
+    client = TestClient(app)
+
+    default = client.get("/api/voice-preview/zh-TW-HsiaoChenNeural")
+    fast = client.get("/api/voice-preview/zh-TW-HsiaoChenNeural?rate=%2B20%25&volume=-10%25")
+    fast_again = client.get("/api/voice-preview/zh-TW-HsiaoChenNeural?rate=%2B20%25&volume=-10%25")
+
+    assert default.content == b"+0%|+0%"
+    assert fast.content == b"+20%|-10%"
+    assert fast_again.content == b"+20%|-10%"
+    assert len(calls) == 2  # default and +20%/-10% each synthesized once, second +20% call cached
 
 
 def test_gemini_api_key_reaches_pipeline_but_never_echoed_in_status(tmp_path):

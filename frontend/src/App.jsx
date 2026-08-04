@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import QRCode from "qrcode";
 import "./App.css";
 import { createJob, downloadUrl, extractScriptText, fetchVoicePreview, getJobStatus } from "./api";
 import { parseNumberedScript } from "./scriptParser";
@@ -34,10 +35,34 @@ const RESOLUTIONS = [
   { value: "3840x2160", label: "3840 x 2160 (4K)" },
 ];
 
+const FONT_SIZES = [
+  { value: 36, label: "小 (36px)" },
+  { value: 48, label: "中 (48px)" },
+  { value: 60, label: "大 (60px)" },
+  { value: 72, label: "特大 (72px)" },
+];
+
+const RATE_MIN = -50;
+const RATE_MAX = 100;
+const VOLUME_MIN = -50;
+const VOLUME_MAX = 50;
+
 const GEMINI_API_KEY_URL = "https://aistudio.google.com/app/apikey";
 const POLL_INTERVAL_MS = 2000;
 
 const DOWNLOAD_LABELS = { mp4: "課程影片", srt: "字幕檔", docx: "講稿" };
+
+function formatPercent(n) {
+  return `${n >= 0 ? "+" : ""}${n}%`;
+}
+
+function toAbsoluteUrl(path) {
+  try {
+    return new URL(path, window.location.origin).href;
+  } catch {
+    return path;
+  }
+}
 
 const STEPS = [
   { n: 1, key: "upload", label: "上傳投影片" },
@@ -70,9 +95,12 @@ function App() {
   const [pasteError, setPasteError] = useState(null);
   const [geminiApiKey, setGeminiApiKey] = useState("");
   const [voice, setVoice] = useState(VOICES[0].value);
+  const [voiceRate, setVoiceRate] = useState(0);
+  const [voiceVolume, setVoiceVolume] = useState(0);
   const [transition, setTransition] = useState("fade");
   const [transitionDurationMs, setTransitionDurationMs] = useState(500);
   const [resolution, setResolution] = useState(RESOLUTIONS[0].value);
+  const [fontSize, setFontSize] = useState(FONT_SIZES[1].value);
   const [logoFile, setLogoFile] = useState(null);
   const [bgmFile, setBgmFile] = useState(null);
   const [introFile, setIntroFile] = useState(null);
@@ -90,6 +118,7 @@ function App() {
   const voiceLabel = VOICES.find((v) => v.value === voice)?.label;
   const transitionLabel = TRANSITIONS.find((t) => t.value === transition)?.label;
   const resolutionLabel = RESOLUTIONS.find((r) => r.value === resolution)?.label;
+  const fontSizeLabel = FONT_SIZES.find((f) => f.value === fontSize)?.label;
 
   useEffect(() => {
     if (!modeConfig.needsTexts || textInputMode !== "perSlide") return;
@@ -191,6 +220,8 @@ function App() {
     imageFiles.forEach((file) => form.append("images", file));
     form.append("script_mode", scriptMode);
     form.append("voice", voice);
+    form.append("rate", formatPercent(voiceRate));
+    form.append("volume", formatPercent(voiceVolume));
     form.append("base_name", baseName || "課程");
     if (modeConfig.needsTexts) {
       form.append("texts", JSON.stringify(perSlideTexts));
@@ -202,6 +233,7 @@ function App() {
     form.append("transition_duration_ms", String(transitionDurationMs));
     form.append("resolution_width", width);
     form.append("resolution_height", height);
+    form.append("font_size", String(fontSize));
     if (logoFile) form.append("logo", logoFile);
     if (bgmFile) form.append("bgm", bgmFile);
     if (introFile) form.append("intro", introFile);
@@ -301,17 +333,23 @@ function App() {
               <VoiceStep
                 voice={voice}
                 setVoice={setVoice}
+                voiceRate={voiceRate}
+                setVoiceRate={setVoiceRate}
+                voiceVolume={voiceVolume}
+                setVoiceVolume={setVoiceVolume}
                 transition={transition}
                 setTransition={setTransition}
+                transitionDurationMs={transitionDurationMs}
+                setTransitionDurationMs={setTransitionDurationMs}
               />
             )}
 
             {currentStep === 4 && (
               <ExtrasStep
-                transitionDurationMs={transitionDurationMs}
-                setTransitionDurationMs={setTransitionDurationMs}
                 resolution={resolution}
                 setResolution={setResolution}
+                fontSize={fontSize}
+                setFontSize={setFontSize}
                 logoFile={logoFile}
                 setLogoFile={setLogoFile}
                 bgmFile={bgmFile}
@@ -329,8 +367,12 @@ function App() {
                 slideCount={imageFiles.length}
                 modeLabel={modeConfig.label}
                 voiceLabel={voiceLabel}
+                voiceRate={voiceRate}
+                voiceVolume={voiceVolume}
                 transitionLabel={transitionLabel}
+                transitionDurationMs={transitionDurationMs}
                 resolutionLabel={resolutionLabel}
+                fontSizeLabel={fontSizeLabel}
                 extras={[
                   logoFile && "Logo",
                   bgmFile && "背景音樂",
@@ -566,14 +608,25 @@ function ScriptStep({
   );
 }
 
-function VoiceStep({ voice, setVoice, transition, setTransition }) {
+function VoiceStep({
+  voice,
+  setVoice,
+  voiceRate,
+  setVoiceRate,
+  voiceVolume,
+  setVoiceVolume,
+  transition,
+  setTransition,
+  transitionDurationMs,
+  setTransitionDurationMs,
+}) {
   const [previewState, setPreviewState] = useState("idle"); // idle | loading | error
   const audioRef = useRef(null);
 
   async function handlePreview() {
     setPreviewState("loading");
     try {
-      const blob = await fetchVoicePreview(voice);
+      const blob = await fetchVoicePreview(voice, formatPercent(voiceRate), formatPercent(voiceVolume));
       const url = URL.createObjectURL(blob);
       if (audioRef.current) audioRef.current.pause();
       const audio = new Audio(url);
@@ -615,6 +668,7 @@ function VoiceStep({ voice, setVoice, transition, setTransition }) {
             </p>
           )}
         </div>
+
         <div className="field">
           <label htmlFor="transition-select">轉場效果</label>
           <select
@@ -629,16 +683,58 @@ function VoiceStep({ voice, setVoice, transition, setTransition }) {
             ))}
           </select>
         </div>
+
+        <div className="field">
+          <label htmlFor="rate-range">
+            語速 <span className="hint">{formatPercent(voiceRate)}</span>
+          </label>
+          <input
+            id="rate-range"
+            type="range"
+            min={RATE_MIN}
+            max={RATE_MAX}
+            step={5}
+            value={voiceRate}
+            onChange={(e) => setVoiceRate(Number(e.target.value))}
+          />
+        </div>
+
+        <div className="field">
+          <label htmlFor="volume-range">
+            音量 <span className="hint">{formatPercent(voiceVolume)}</span>
+          </label>
+          <input
+            id="volume-range"
+            type="range"
+            min={VOLUME_MIN}
+            max={VOLUME_MAX}
+            step={5}
+            value={voiceVolume}
+            onChange={(e) => setVoiceVolume(Number(e.target.value))}
+          />
+        </div>
+
+        <div className="field">
+          <label htmlFor="transition-ms-input">轉場時間（毫秒）</label>
+          <input
+            id="transition-ms-input"
+            type="number"
+            min="0"
+            step="100"
+            value={transitionDurationMs}
+            onChange={(e) => setTransitionDurationMs(Number(e.target.value))}
+          />
+        </div>
       </div>
     </>
   );
 }
 
 function ExtrasStep({
-  transitionDurationMs,
-  setTransitionDurationMs,
   resolution,
   setResolution,
+  fontSize,
+  setFontSize,
   logoFile,
   setLogoFile,
   bgmFile,
@@ -653,16 +749,6 @@ function ExtrasStep({
       <CardHead eyebrow="Step 04" title="進階選項" trailing="全部選填" />
       <div className="field-grid">
         <div className="field">
-          <label htmlFor="transition-ms-input">轉場時間（毫秒）</label>
-          <input
-            id="transition-ms-input"
-            type="number"
-            min="0"
-            value={transitionDurationMs}
-            onChange={(e) => setTransitionDurationMs(Number(e.target.value))}
-          />
-        </div>
-        <div className="field">
           <label htmlFor="resolution-select">解析度</label>
           <select
             id="resolution-select"
@@ -672,6 +758,21 @@ function ExtrasStep({
             {RESOLUTIONS.map((r) => (
               <option key={r.value} value={r.value}>
                 {r.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="field">
+          <label htmlFor="font-size-select">字幕大小</label>
+          <select
+            id="font-size-select"
+            value={fontSize}
+            onChange={(e) => setFontSize(Number(e.target.value))}
+          >
+            {FONT_SIZES.map((f) => (
+              <option key={f.value} value={f.value}>
+                {f.label}
               </option>
             ))}
           </select>
@@ -735,18 +836,44 @@ function ScriptFileUpload({ onExtracted }) {
   );
 }
 
-function ReviewStep({ baseName, slideCount, modeLabel, voiceLabel, transitionLabel, resolutionLabel, extras }) {
+function ReviewStep({
+  baseName,
+  slideCount,
+  modeLabel,
+  voiceLabel,
+  voiceRate,
+  voiceVolume,
+  transitionLabel,
+  transitionDurationMs,
+  resolutionLabel,
+  fontSizeLabel,
+  extras,
+}) {
   const rows = useMemo(
     () => [
       ["課程名稱", baseName || "課程"],
       ["投影片頁數", `${slideCount} 頁`],
       ["講稿模式", modeLabel],
       ["配音語者", voiceLabel],
-      ["轉場效果", transitionLabel],
+      ["語速 / 音量", `${formatPercent(voiceRate)} / ${formatPercent(voiceVolume)}`],
+      ["轉場效果", `${transitionLabel}（${transitionDurationMs} 毫秒）`],
       ["解析度", resolutionLabel],
+      ["字幕大小", fontSizeLabel],
       ["額外項目", extras.length ? extras.join("、") : "無"],
     ],
-    [baseName, slideCount, modeLabel, voiceLabel, transitionLabel, resolutionLabel, extras]
+    [
+      baseName,
+      slideCount,
+      modeLabel,
+      voiceLabel,
+      voiceRate,
+      voiceVolume,
+      transitionLabel,
+      transitionDurationMs,
+      resolutionLabel,
+      fontSizeLabel,
+      extras,
+    ]
   );
 
   return (
@@ -776,6 +903,23 @@ function CardHead({ eyebrow, title, trailing }) {
   );
 }
 
+function MobileDownloadQr({ mp4Path }) {
+  const canvasRef = useRef(null);
+  const absoluteUrl = toAbsoluteUrl(downloadUrl(mp4Path));
+
+  useEffect(() => {
+    if (!canvasRef.current) return;
+    QRCode.toCanvas(canvasRef.current, absoluteUrl, { width: 148, margin: 1 }).catch(() => {});
+  }, [absoluteUrl]);
+
+  return (
+    <div className="qr-block">
+      <canvas ref={canvasRef} />
+      <p className="status-caption">掃描 QR Code，在手機上下載課程影片</p>
+    </div>
+  );
+}
+
 function StatusView({ jobId, jobStatus, isRunning, isDone, isError, onReset }) {
   return (
     <div className="status-panel">
@@ -798,14 +942,17 @@ function StatusView({ jobId, jobStatus, isRunning, isDone, isError, onReset }) {
       )}
 
       {isDone && (
-        <div className="deliverables">
-          {Object.entries(jobStatus.downloads).map(([type, path]) => (
-            <a key={type} className="chip" href={downloadUrl(path)} download>
-              <span className="ext">{type.toUpperCase()}</span>
-              {DOWNLOAD_LABELS[type] || type}
-            </a>
-          ))}
-        </div>
+        <>
+          <div className="deliverables">
+            {Object.entries(jobStatus.downloads).map(([type, path]) => (
+              <a key={type} className="chip" href={downloadUrl(path)} download>
+                <span className="ext">{type.toUpperCase()}</span>
+                {DOWNLOAD_LABELS[type] || type}
+              </a>
+            ))}
+          </div>
+          {jobStatus.downloads.mp4 && <MobileDownloadQr mp4Path={jobStatus.downloads.mp4} />}
+        </>
       )}
 
       {isError && <p className="error-msg">{jobStatus.error}</p>}
