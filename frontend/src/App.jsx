@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import "./App.css";
 import { createJob, downloadUrl, getJobStatus } from "./api";
+import { parseNumberedScript } from "./scriptParser";
 
 const SCRIPT_MODES = [
   { value: "NOTES", label: "使用投影片備忘稿", needsTexts: false, needsApiKey: false },
@@ -63,7 +64,10 @@ function App() {
   const [imageFiles, setImageFiles] = useState([]);
   const [baseName, setBaseName] = useState("課程");
   const [scriptMode, setScriptMode] = useState("NOTES");
+  const [textInputMode, setTextInputMode] = useState("perSlide");
   const [perSlideTexts, setPerSlideTexts] = useState([]);
+  const [pasteText, setPasteText] = useState("");
+  const [pasteError, setPasteError] = useState(null);
   const [geminiApiKey, setGeminiApiKey] = useState("");
   const [voice, setVoice] = useState(VOICES[0].value);
   const [transition, setTransition] = useState("fade");
@@ -88,9 +92,24 @@ function App() {
   const resolutionLabel = RESOLUTIONS.find((r) => r.value === resolution)?.label;
 
   useEffect(() => {
-    if (!modeConfig.needsTexts) return;
+    if (!modeConfig.needsTexts || textInputMode !== "perSlide") return;
     setPerSlideTexts((prev) => imageFiles.map((_, i) => prev[i] || ""));
-  }, [imageFiles, modeConfig.needsTexts]);
+  }, [imageFiles, modeConfig.needsTexts, textInputMode]);
+
+  useEffect(() => {
+    if (!modeConfig.needsTexts || textInputMode !== "paste") return;
+    if (!pasteText.trim()) {
+      setPasteError(null);
+      return;
+    }
+    const result = parseNumberedScript(pasteText, imageFiles.length);
+    if (result.error) {
+      setPasteError(result.error);
+    } else {
+      setPasteError(null);
+      setPerSlideTexts(result.texts);
+    }
+  }, [pasteText, textInputMode, imageFiles.length, modeConfig.needsTexts]);
 
   useEffect(() => {
     if (!jobId) return undefined;
@@ -128,8 +147,14 @@ function App() {
     }
     if (step === 2) {
       if (modeConfig.needsApiKey && !geminiApiKey.trim()) return "此模式需要 Gemini API Key";
-      if (modeConfig.needsTexts && perSlideTexts.some((t) => !t.trim()))
-        return "請為每一頁投影片輸入講稿";
+      if (modeConfig.needsTexts) {
+        if (textInputMode === "paste") {
+          if (!pasteText.trim()) return "請貼上包含頁碼標記的講稿";
+          if (pasteError) return pasteError;
+        } else if (perSlideTexts.some((t) => !t.trim())) {
+          return "請為每一頁投影片輸入講稿";
+        }
+      }
       return null;
     }
     return null;
@@ -262,8 +287,13 @@ function App() {
                 modeConfig={modeConfig}
                 geminiApiKey={geminiApiKey}
                 setGeminiApiKey={setGeminiApiKey}
+                textInputMode={textInputMode}
+                setTextInputMode={setTextInputMode}
                 perSlideTexts={perSlideTexts}
                 setPerSlideTexts={setPerSlideTexts}
+                pasteText={pasteText}
+                setPasteText={setPasteText}
+                pasteError={pasteError}
               />
             )}
 
@@ -409,9 +439,16 @@ function ScriptStep({
   modeConfig,
   geminiApiKey,
   setGeminiApiKey,
+  textInputMode,
+  setTextInputMode,
   perSlideTexts,
   setPerSlideTexts,
+  pasteText,
+  setPasteText,
+  pasteError,
 }) {
+  const detectedCount = perSlideTexts.filter((t) => t.trim()).length;
+
   return (
     <>
       <CardHead eyebrow="Step 02" title="講稿來源" trailing={slideCount ? `${slideCount} 頁投影片` : null} />
@@ -454,23 +491,71 @@ function ScriptStep({
 
         {modeConfig.needsTexts && slideCount > 0 && (
           <div className="field full">
-            <label>逐頁講稿</label>
-            <div className="per-slide-texts">
-              {Array.from({ length: slideCount }).map((_, i) => (
-                <div key={i} className="field">
-                  <label>第 {i + 1} 頁</label>
-                  <textarea
-                    rows={2}
-                    value={perSlideTexts[i] || ""}
-                    onChange={(e) => {
-                      const next = [...perSlideTexts];
-                      next[i] = e.target.value;
-                      setPerSlideTexts(next);
-                    }}
-                  />
-                </div>
-              ))}
+            <div className="tab-group" role="tablist">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={textInputMode === "perSlide"}
+                className={"tab" + (textInputMode === "perSlide" ? " selected" : "")}
+                onClick={() => setTextInputMode("perSlide")}
+              >
+                逐頁輸入
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={textInputMode === "paste"}
+                className={"tab" + (textInputMode === "paste" ? " selected" : "")}
+                onClick={() => setTextInputMode("paste")}
+              >
+                整段貼上自動分頁
+              </button>
             </div>
+
+            {textInputMode === "perSlide" ? (
+              <div className="per-slide-texts">
+                {Array.from({ length: slideCount }).map((_, i) => (
+                  <div key={i} className="field">
+                    <label>第 {i + 1} 頁</label>
+                    <textarea
+                      rows={2}
+                      value={perSlideTexts[i] || ""}
+                      onChange={(e) => {
+                        const next = [...perSlideTexts];
+                        next[i] = e.target.value;
+                        setPerSlideTexts(next);
+                      }}
+                    />
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="field">
+                <label htmlFor="paste-script-input">
+                  <span className="hint">
+                    用「第1頁」「第一頁」這樣的標記分開每一頁講稿，系統會自動依標記分頁
+                  </span>
+                </label>
+                <textarea
+                  id="paste-script-input"
+                  rows={10}
+                  placeholder={"第1頁\n大家好，歡迎收看本次課程。\n第2頁\n這是第二頁的內容。"}
+                  value={pasteText}
+                  onChange={(e) => setPasteText(e.target.value)}
+                />
+                {pasteError ? (
+                  <p className="form-error" style={{ margin: "8px 0 0" }}>
+                    {pasteError}
+                  </p>
+                ) : (
+                  pasteText.trim() && (
+                    <p className="status-caption" style={{ marginTop: 8 }}>
+                      已辨識 {detectedCount} / {slideCount} 頁講稿
+                    </p>
+                  )
+                )}
+              </div>
+            )}
           </div>
         )}
       </div>
