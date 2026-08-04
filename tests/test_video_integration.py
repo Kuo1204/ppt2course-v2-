@@ -94,6 +94,27 @@ def test_compose_video_end_to_end_with_real_ffmpeg_and_edge_tts(tmp_path):
     actual_ms = get_audio_duration_ms(out_video)
     assert abs(actual_ms - expected_total_ms) <= 200
 
+    # Regression check: without an explicit -c:v/-pix_fmt, ffmpeg let the
+    # filter graph pick a chroma format (often yuv444p) that standard players
+    # — including Windows' built-in ones — can't decode. yuv420p is the
+    # broadly-compatible baseline.
+    codec_name, pix_fmt = _get_video_codec_info(out_video)
+    assert codec_name == "h264"
+    assert pix_fmt == "yuv420p"
+
+
+def _get_video_codec_info(path: str) -> tuple[str, str]:
+    result = subprocess.run(
+        [
+            "ffprobe", "-v", "error", "-select_streams", "v:0",
+            "-show_entries", "stream=codec_name,pix_fmt",
+            "-of", "csv=s=x:p=0", path,
+        ],
+        capture_output=True, text=True, check=True,
+    )
+    codec_name, pix_fmt = result.stdout.strip().split("x")
+    return codec_name, pix_fmt
+
 
 def _get_resolution(path: str) -> tuple[int, int]:
     result = subprocess.run(

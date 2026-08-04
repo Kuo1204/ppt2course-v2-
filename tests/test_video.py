@@ -177,6 +177,14 @@ def test_build_ffmpeg_command_two_slides_structure():
     assert cmd[-1] == "out.mp4"
     assert "-map" in cmd
 
+    # Without an explicit codec/pixel format, ffmpeg picks whatever the filter
+    # graph naturally produces (often yuv444p after xfade/subtitles), which
+    # many standard players — including Windows' built-in ones — can't decode.
+    assert cmd[cmd.index("-c:v") + 1] == "libx264"
+    assert cmd[cmd.index("-pix_fmt") + 1] == "yuv420p"
+    assert cmd[cmd.index("-c:a") + 1] == "aac"
+    assert "+faststart" in cmd[cmd.index("-movflags") + 1]
+
 
 # ---- compose_video (mocked subprocess) ----
 

@@ -205,6 +205,17 @@ def _build_ffmpeg_command(
         f"[{audio_label}]",
         "-r",
         str(fps),
+        # Without these, ffmpeg picks whatever the filter graph naturally
+        # produces (often yuv444p after xfade/subtitles), which standard
+        # players — including Windows' built-in ones — can't decode.
+        "-c:v",
+        "libx264",
+        "-pix_fmt",
+        "yuv420p",
+        "-c:a",
+        "aac",
+        "-movflags",
+        "+faststart",
         out_video_path,
     ]
     return cmd
