@@ -10,6 +10,7 @@ response.
 import base64
 import json
 import os
+import re
 import secrets
 import uuid
 from pathlib import Path
@@ -41,6 +42,21 @@ DEFAULT_FRONTEND_DIST = os.environ.get(
     "PPT2COURSE_FRONTEND_DIST", str(Path(__file__).resolve().parents[2] / "frontend" / "dist")
 )
 ALLOWED_DOWNLOAD_TYPES = {"mp4", "srt", "docx"}
+
+# The mobile-download QR code links straight to this route. A phone's camera
+# app / QR scanner typically opens the link in a lightweight in-app browser
+# that doesn't render a Basic Auth login prompt for a direct file download —
+# the request just silently fails there. The job id is an unguessable UUID,
+# so exempting only this route (not job creation or anything else) keeps
+# "scan the QR, get the file" frictionless without weakening the gate on the
+# parts that actually cost compute.
+_DOWNLOAD_ROUTE_PATTERN = re.compile(
+    r"^/api/jobs/[^/]+/download/(?:" + "|".join(re.escape(t) for t in ALLOWED_DOWNLOAD_TYPES) + r")$"
+)
+
+
+def _is_auth_exempt_download_route(path: str) -> bool:
+    return bool(_DOWNLOAD_ROUTE_PATTERN.match(path))
 
 # Unset by default (no auth) so local dev/tests are unaffected; set both env
 # vars to gate the whole app (API + the mounted frontend) behind a shared
@@ -85,14 +101,14 @@ def create_app(
 
         @app.middleware("http")
         async def require_basic_auth(request: Request, call_next):
-            if not _has_valid_basic_auth(
+            if _is_auth_exempt_download_route(request.url.path) or _has_valid_basic_auth(
                 request.headers.get("authorization", ""), basic_auth_user, basic_auth_password
             ):
-                return Response(
-                    status_code=401,
-                    headers={"WWW-Authenticate": 'Basic realm="PPT2Course AI"'},
-                )
-            return await call_next(request)
+                return await call_next(request)
+            return Response(
+                status_code=401,
+                headers={"WWW-Authenticate": 'Basic realm="PPT2Course AI"'},
+            )
 
     @app.post("/api/jobs")
     async def create_job(

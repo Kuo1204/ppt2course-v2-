@@ -510,3 +510,57 @@ def test_auth_gate_also_protects_the_mounted_frontend(tmp_path):
 
     assert unauthenticated.status_code == 401
     assert authenticated.status_code == 200
+
+
+def test_download_route_is_exempt_from_basic_auth(tmp_path):
+    # The mobile-download QR code points straight at this URL. A phone's
+    # camera app / QR scanner typically opens it in a lightweight in-app
+    # browser that doesn't render a Basic Auth login prompt for a direct
+    # file download — the request just silently fails, which is what
+    # actually reached us as "can scan the QR but can't download or view".
+    # The job id itself is an unguessable UUID, so exempting only this one
+    # route (not job creation or the rest of the app) keeps the QR
+    # share-a-finished-video flow frictionless without weakening the gate
+    # on the parts that cost real compute (uploading, generating).
+    out_file = tmp_path / "課程.mp4"
+    out_file.write_bytes(b"video-bytes")
+
+    def fake_pipeline(**kwargs):
+        return {"mp4": str(out_file)}
+
+    manager = JobManager(pipeline_fn=fake_pipeline, auto_start=False)
+    app = create_app(
+        job_manager=manager,
+        data_root=str(tmp_path / "data"),
+        frontend_dist=None,
+        basic_auth_user="admin",
+        basic_auth_password="s3cret",
+    )
+    client = TestClient(app)
+    job_id = client.post(
+        "/api/jobs",
+        data=_upload_form(),
+        files=_upload_files(),
+        headers=_basic_auth_header("admin", "s3cret"),
+    ).json()["job_id"]
+    manager.process_next()
+
+    response = client.get(f"/api/jobs/{job_id}/download/mp4")  # no credentials
+
+    assert response.status_code == 200
+    assert response.content == b"video-bytes"
+
+
+def test_job_status_and_job_creation_still_require_auth_when_configured(tmp_path):
+    manager = JobManager(pipeline_fn=lambda **kw: None, auto_start=False)
+    app = create_app(
+        job_manager=manager,
+        data_root=str(tmp_path / "data"),
+        frontend_dist=None,
+        basic_auth_user="admin",
+        basic_auth_password="s3cret",
+    )
+    client = TestClient(app)
+
+    assert client.get("/api/jobs/does-not-exist").status_code == 401
+    assert client.post("/api/jobs", data=_upload_form(), files=_upload_files()).status_code == 401
