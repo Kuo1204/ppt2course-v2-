@@ -1413,6 +1413,10 @@ function HelpWidget() {
             <div className="help-tips">
               <p className="help-tips-label">小提醒</p>
               <ul>
+                <li>
+                  PPTX 只用來讓系統讀取文字（投影片內容、備忘稿）；真正剪進影片畫面的是你上傳的圖片 —
+                  用截圖而非系統重畫投影片，才不會字型跑掉、版面跑版
+                </li>
                 <li>自己貼講稿時，用「第1頁」「第一頁」這樣的格式標記每一頁</li>
                 <li>完成後除了下載，也能用 QR Code 讓手機直接掃碼下載</li>
                 <li>產出的檔案會保留 24 小時，請盡快下載</li>
