@@ -157,7 +157,7 @@ def _subtitle_filter(srt_path: str, video_label: str, font_size: int) -> tuple[s
     style = (
         f"FontName={SUBTITLE_FONT_NAME},FontSize={font_size},"
         f"PrimaryColour=&HFFFFFF&,OutlineColour=&H000000&,"
-        f"BorderStyle=1,Outline=2,Shadow=0,MarginV={SUBTITLE_MARGIN_V}"
+        f"BorderStyle=1,Outline=2,Shadow=0,MarginV={SUBTITLE_MARGIN_V},WrapStyle=2"
     )
     filt = f"[{video_label}]subtitles='{escaped_path}':force_style='{style}'[vsub]"
     return filt, "vsub"

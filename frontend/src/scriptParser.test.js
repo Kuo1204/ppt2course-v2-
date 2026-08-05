@@ -9,6 +9,13 @@ describe("parseNumberedScript", () => {
     expect(result.texts).toEqual(["大家好，歡迎收看。", "這是第二頁的內容。"]);
   });
 
+  it("strips a leading BOM before matching the first page marker", () => {
+    const raw = "﻿第1頁\n大家好\n第2頁\n謝謝收看";
+    const result = parseNumberedScript(raw, 2);
+    expect(result.error).toBeUndefined();
+    expect(result.texts).toEqual(["大家好", "謝謝收看"]);
+  });
+
   it("splits text marked with Chinese-numeral page markers", () => {
     const raw = "第一頁\n開場白。\n第二頁\n結尾。";
     const result = parseNumberedScript(raw, 2);

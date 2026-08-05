@@ -18,7 +18,11 @@ def extract_text_from_file(filename: str, content: bytes) -> str:
     ext = os.path.splitext(filename)[1].lower()
 
     if ext == ".txt":
-        return content.decode("utf-8", errors="replace")
+        # utf-8-sig strips a leading BOM if present (common from Windows
+        # editors saving "UTF-8 with BOM") and is identical to plain utf-8
+        # otherwise. A stray BOM before the text broke the "^第" page-marker
+        # regex on line 1 only, since it isn't whitespace the regex skips.
+        return content.decode("utf-8-sig", errors="replace")
 
     if ext == ".docx":
         try:

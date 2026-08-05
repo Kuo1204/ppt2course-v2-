@@ -36,7 +36,9 @@ function chineseNumeralToNumber(text) {
 }
 
 export function parseNumberedScript(rawText, expectedSlideCount) {
-  const lines = rawText.split(/\r\n|\r|\n/);
+  // a leading BOM (common from Windows editors saving "UTF-8 with BOM")
+  // isn't whitespace, so it silently broke the "^第" match on line 1 only.
+  const lines = rawText.replace(/^﻿/, "").split(/\r\n|\r|\n/);
   const sections = [];
   let current = null;
 

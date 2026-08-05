@@ -177,6 +177,12 @@ def test_build_ffmpeg_command_two_slides_structure():
     assert cmd[-1] == "out.mp4"
     assert "-map" in cmd
 
+    # WrapStyle=2 disables libass's automatic line-wrap for cues that don't
+    # fit the frame width — without it, a single-line SRT cue still gets
+    # visually split across two lines by the renderer at small resolutions
+    # or large font sizes, defeating the "always one line" cue design.
+    assert "WrapStyle=2" in filter_complex
+
     # Without an explicit codec/pixel format, ffmpeg picks whatever the filter
     # graph naturally produces (often yuv444p after xfade/subtitles), which
     # many standard players — including Windows' built-in ones — can't decode.
