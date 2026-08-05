@@ -423,6 +423,8 @@ function App() {
           </div>
         </div>
       )}
+
+      <HelpWidget />
     </div>
   );
 }
@@ -1003,6 +1005,92 @@ function CardHead({ eyebrow, title, trailing }) {
       </div>
       {trailing && <span className="reel-code">{trailing}</span>}
     </div>
+  );
+}
+
+function HelpWidget() {
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    function handleKeyDown(e) {
+      if (e.key === "Escape") setOpen(false);
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [open]);
+
+  return (
+    <>
+      <button
+        type="button"
+        className="help-fab"
+        onClick={() => setOpen(true)}
+        aria-haspopup="dialog"
+        aria-label="使用說明"
+      >
+        ?
+      </button>
+
+      {open && (
+        <div className="help-backdrop" onClick={() => setOpen(false)}>
+          <div
+            className="help-panel"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="help-panel-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="help-panel-head">
+              <div>
+                <span className="eyebrow">Quick Start</span>
+                <h2 id="help-panel-title">快速上手</h2>
+              </div>
+              <button
+                type="button"
+                className="help-close"
+                onClick={() => setOpen(false)}
+                aria-label="關閉說明"
+              >
+                ✕
+              </button>
+            </div>
+
+            <ol className="help-steps">
+              <li>
+                <b>上傳投影片</b>
+                <span>上傳 .pptx 檔案，加上每一頁的截圖，並設定課程名稱。</span>
+              </li>
+              <li>
+                <b>講稿來源</b>
+                <span>用投影片備忘稿、自己貼上／上傳講稿，或讓 AI 生成或潤飾。</span>
+              </li>
+              <li>
+                <b>語音與轉場</b>
+                <span>選配音角色、語速與音量，可先按「預覽配音」試聽。</span>
+              </li>
+              <li>
+                <b>進階選項</b>
+                <span>Logo、背景音樂、片頭尾、字幕大小，全部選填，不設定也沒關係。</span>
+              </li>
+              <li>
+                <b>開始製作</b>
+                <span>送出後排隊處理，完成後可下載影片、字幕檔、逐字稿。</span>
+              </li>
+            </ol>
+
+            <div className="help-tips">
+              <p className="help-tips-label">小提醒</p>
+              <ul>
+                <li>自己貼講稿時，用「第1頁」「第一頁」這樣的格式標記每一頁</li>
+                <li>完成後除了下載，也能用 QR Code 讓手機直接掃碼下載</li>
+                <li>產出的檔案會保留 24 小時，請盡快下載</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 

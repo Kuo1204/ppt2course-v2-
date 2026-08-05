@@ -591,6 +591,171 @@ input[type="range"] {
   margin: 0 0 16px;
 }
 
+/* ---------- help widget ---------- */
+.help-fab {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-family: var(--mono);
+  font-size: 19px;
+  font-weight: 700;
+  background: var(--accent);
+  color: var(--bg);
+  border: 1px solid var(--accent);
+  box-shadow: var(--shadow);
+  cursor: pointer;
+  z-index: 40;
+  transition: transform 0.12s ease;
+}
+
+.help-fab:hover {
+  transform: scale(1.06);
+}
+
+.help-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  z-index: 50;
+}
+
+.help-panel {
+  width: 100%;
+  max-width: 480px;
+  max-height: 85vh;
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-shadow: var(--shadow);
+  padding: 26px;
+}
+
+.help-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.help-panel-head .eyebrow {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--accent);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  display: block;
+}
+
+.help-panel-head h2 {
+  font-size: 19px;
+  font-weight: 700;
+  margin-top: 4px;
+}
+
+.help-close {
+  flex-shrink: 0;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  cursor: pointer;
+}
+
+.help-close:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.help-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  counter-reset: help-step;
+  margin: 0 0 22px;
+  padding: 0;
+  list-style: none;
+}
+
+.help-steps li {
+  display: grid;
+  grid-template-columns: 28px 1fr;
+  gap: 12px;
+  counter-increment: help-step;
+}
+
+.help-steps li::before {
+  content: counter(help-step);
+  font-family: var(--mono);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+}
+
+.help-steps li b {
+  grid-column: 2;
+  display: block;
+  font-size: 14px;
+  margin-bottom: 2px;
+}
+
+.help-steps li span {
+  grid-column: 2;
+  display: block;
+  font-size: 13px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
+.help-tips {
+  border-top: 1px solid var(--border);
+  padding-top: 16px;
+}
+
+.help-tips-label {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--accent);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin: 0 0 10px;
+}
+
+.help-tips ul {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.help-tips li {
+  font-size: 13px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
 /* ---------- status panel ---------- */
 .status-panel {
   background: var(--surface);
