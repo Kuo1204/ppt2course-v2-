@@ -46,6 +46,23 @@ export async function extractScriptText(file) {
   return response.json();
 }
 
+export async function fetchPptxPreview(pptxFile) {
+  const form = new FormData();
+  form.append("pptx", pptxFile);
+
+  const response = await fetch(`${API_BASE_URL}/api/pptx-preview`, {
+    method: "POST",
+    body: form,
+  });
+
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.detail || `投影片預覽失敗 (HTTP ${response.status})`);
+  }
+
+  return response.json();
+}
+
 export async function generateScriptPreview({ pptxFile, scriptMode, geminiApiKey, geminiModel, texts }) {
   const form = new FormData();
   form.append("pptx", pptxFile);

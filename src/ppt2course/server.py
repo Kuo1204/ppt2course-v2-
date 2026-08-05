@@ -23,6 +23,7 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from ppt2course.jobs import JobManager, JobStatus
+from ppt2course.pptx_preview import DEFAULT_THUMBNAIL_WIDTH, PptxPreviewError, render_pptx_thumbnails
 from ppt2course.script_extract import ScriptExtractionError, extract_text_from_file
 from ppt2course.script_gen import (
     DEFAULT_GEMINI_MODEL,
@@ -271,6 +272,28 @@ def create_app(
         except ScriptExtractionError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"text": text}
+
+    @app.post("/api/pptx-preview")
+    async def pptx_preview(pptx: UploadFile = File(...)):
+        # Mirrors /api/generate-script's ephemeral-tempfile pattern: the
+        # upload is written to disk only long enough for LibreOffice to read
+        # it, then deleted — nothing from this preview-only call persists.
+        with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as tmp:
+            tmp.write(await pptx.read())
+            pptx_path = tmp.name
+        try:
+            try:
+                thumbnails = render_pptx_thumbnails(pptx_path, thumbnail_width=DEFAULT_THUMBNAIL_WIDTH)
+            except PptxPreviewError as exc:
+                raise HTTPException(status_code=502, detail=f"failed to render PPTX preview: {exc}") from exc
+        finally:
+            os.unlink(pptx_path)
+
+        data_urls = [
+            "data:image/png;base64," + base64.b64encode(png_bytes).decode("ascii")
+            for png_bytes in thumbnails
+        ]
+        return {"thumbnails": data_urls}
 
     @app.post("/api/generate-script")
     async def generate_script_preview(

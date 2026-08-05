@@ -5,6 +5,7 @@ import {
   createJob,
   downloadUrl,
   extractScriptText,
+  fetchPptxPreview,
   fetchVoicePreview,
   generateScriptPreview,
   getJobStatus,
@@ -99,6 +100,9 @@ function App() {
   const [currentStep, setCurrentStep] = useState(1);
 
   const [pptxFile, setPptxFile] = useState(null);
+  const [pptxPreviewStatus, setPptxPreviewStatus] = useState("idle"); // idle | loading | done | error
+  const [pptxPreviewThumbnails, setPptxPreviewThumbnails] = useState([]);
+  const [pptxPreviewError, setPptxPreviewError] = useState(null);
   const [imageFiles, setImageFiles] = useState([]);
   const [baseName, setBaseName] = useState("課程");
   const [scriptMode, setScriptMode] = useState("NOTES");
@@ -128,6 +132,7 @@ function App() {
   const [formError, setFormError] = useState(null);
 
   const pollTimerRef = useRef(null);
+  const pptxPreviewRequestRef = useRef(0);
   const thumbUrls = useObjectUrls(imageFiles);
 
   const modeConfig = SCRIPT_MODES.find((m) => m.value === scriptMode);
@@ -166,6 +171,40 @@ function App() {
       setScriptPreviewStatus("error");
     }
   }
+
+  // Real slide thumbnails (rendered server-side via LibreOffice), not just a
+  // filename — mirrors the instant visual confirmation the per-slide image
+  // upload field already gives, so the user can tell at a glance they picked
+  // the right deck. Runs automatically on file selection; the request id
+  // guards against an in-flight request from a since-replaced file
+  // overwriting the current one's result.
+  async function loadPptxPreview(file) {
+    const requestId = ++pptxPreviewRequestRef.current;
+    setPptxPreviewStatus("loading");
+    setPptxPreviewError(null);
+    try {
+      const { thumbnails } = await fetchPptxPreview(file);
+      if (pptxPreviewRequestRef.current !== requestId) return;
+      setPptxPreviewThumbnails(thumbnails);
+      setPptxPreviewStatus("done");
+    } catch (err) {
+      if (pptxPreviewRequestRef.current !== requestId) return;
+      setPptxPreviewError(err.message);
+      setPptxPreviewStatus("error");
+    }
+  }
+
+  useEffect(() => {
+    if (!pptxFile) {
+      pptxPreviewRequestRef.current += 1; // invalidate any in-flight request
+      setPptxPreviewStatus("idle");
+      setPptxPreviewThumbnails([]);
+      setPptxPreviewError(null);
+      return;
+    }
+    loadPptxPreview(pptxFile);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pptxFile]);
 
   useEffect(() => {
     if (!modeConfig.needsTexts || textInputMode !== "perSlide") return;
@@ -218,6 +257,10 @@ function App() {
     setCurrentStep(1);
 
     setPptxFile(null);
+    pptxPreviewRequestRef.current += 1; // invalidate any in-flight preview request
+    setPptxPreviewStatus("idle");
+    setPptxPreviewThumbnails([]);
+    setPptxPreviewError(null);
     setImageFiles([]);
     setBaseName("課程");
     setScriptMode("NOTES");
@@ -404,6 +447,10 @@ function App() {
               <UploadStep
                 pptxFile={pptxFile}
                 setPptxFile={setPptxFile}
+                pptxPreviewStatus={pptxPreviewStatus}
+                pptxPreviewThumbnails={pptxPreviewThumbnails}
+                pptxPreviewError={pptxPreviewError}
+                onRetryPptxPreview={() => loadPptxPreview(pptxFile)}
                 imageFiles={imageFiles}
                 setImageFiles={setImageFiles}
                 thumbUrls={thumbUrls}
@@ -524,10 +571,28 @@ function App() {
   );
 }
 
-function UploadStep({ pptxFile, setPptxFile, imageFiles, setImageFiles, thumbUrls, baseName, setBaseName }) {
+function UploadStep({
+  pptxFile,
+  setPptxFile,
+  pptxPreviewStatus,
+  pptxPreviewThumbnails,
+  pptxPreviewError,
+  onRetryPptxPreview,
+  imageFiles,
+  setImageFiles,
+  thumbUrls,
+  baseName,
+  setBaseName,
+}) {
+  const slideCountTrailing = imageFiles.length
+    ? `${imageFiles.length} 頁投影片`
+    : pptxPreviewThumbnails.length
+      ? `${pptxPreviewThumbnails.length} 頁投影片`
+      : null;
+
   return (
     <>
-      <CardHead eyebrow="Step 01" title="上傳投影片" trailing={imageFiles.length ? `${imageFiles.length} 頁投影片` : null} />
+      <CardHead eyebrow="Step 01" title="上傳投影片" trailing={slideCountTrailing} />
       <div className="field-grid">
         <div className="field full">
           <label htmlFor="pptx-input">PPTX 檔案</label>
@@ -541,6 +606,33 @@ function UploadStep({ pptxFile, setPptxFile, imageFiles, setImageFiles, thumbUrl
             <span className="filename">{pptxFile ? pptxFile.name : "尚未選擇檔案"}</span>
             <span className="btn-mini">選擇</span>
           </div>
+
+          {pptxPreviewStatus === "loading" && (
+            <p className="pptx-preview-status">
+              <span className="pptx-preview-spinner" aria-hidden="true" />
+              正在產生投影片預覽縮圖…
+            </p>
+          )}
+
+          {pptxPreviewStatus === "error" && (
+            <p className="pptx-preview-status pptx-preview-status-error">
+              預覽產生失敗：{pptxPreviewError}
+              <button type="button" className="btn-mini" onClick={onRetryPptxPreview}>
+                重試
+              </button>
+            </p>
+          )}
+
+          {pptxPreviewStatus === "done" && pptxPreviewThumbnails.length > 0 && (
+            <div className="pptx-preview-grid">
+              {pptxPreviewThumbnails.map((url, i) => (
+                <div key={i} className="pptx-preview-thumb">
+                  <img src={url} alt={`第 ${i + 1} 頁投影片預覽`} />
+                  <span className="pptx-preview-thumb-badge">{i + 1}</span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
         <div className="field full">

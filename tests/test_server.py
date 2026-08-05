@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from ppt2course.jobs import JobManager
 from ppt2course.pipeline import PipelineError
+from ppt2course.pptx_preview import PptxPreviewError
 from ppt2course.script_gen import ScriptGenerationError, ScriptMode
 from ppt2course.server import create_app
 from ppt2course.tts import TtsError
@@ -575,6 +576,67 @@ def test_generate_script_preview_never_stores_the_api_key(tmp_path):
                 files={"pptx": ("deck.pptx", io.BytesIO(b"fake-pptx"), "application/octet-stream")},
             )
     assert "super-secret-key" not in response.text
+
+
+# ---------- PPTX preview (real slide thumbnails for the upload step) ----------
+# Rendering the whole video (or even just extracting text) doesn't tell the
+# user whether they uploaded the right deck. This endpoint runs LibreOffice
+# synchronously to produce real slide thumbnails, mirroring the visual
+# feedback the per-slide image upload field already gives.
+
+
+def test_pptx_preview_returns_one_data_url_per_thumbnail():
+    manager = JobManager(pipeline_fn=lambda **kwargs: {}, auto_start=False)
+    app = create_app(job_manager=manager, data_root=None, frontend_dist=None)
+    client = TestClient(app)
+
+    fake_pngs = [b"\x89PNG-page-1", b"\x89PNG-page-2"]
+    with patch("ppt2course.server.render_pptx_thumbnails", return_value=fake_pngs) as mock_render:
+        response = client.post(
+            "/api/pptx-preview",
+            files={"pptx": ("deck.pptx", io.BytesIO(b"fake-pptx"), "application/octet-stream")},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["thumbnails"]) == 2
+    for url in body["thumbnails"]:
+        assert url.startswith("data:image/png;base64,")
+    mock_render.assert_called_once()
+
+
+def test_pptx_preview_wraps_conversion_error_as_502():
+    manager = JobManager(pipeline_fn=lambda **kwargs: {}, auto_start=False)
+    app = create_app(job_manager=manager, data_root=None, frontend_dist=None)
+    client = TestClient(app)
+
+    with patch(
+        "ppt2course.server.render_pptx_thumbnails",
+        side_effect=PptxPreviewError("LibreOffice not found"),
+    ):
+        response = client.post(
+            "/api/pptx-preview",
+            files={"pptx": ("deck.pptx", io.BytesIO(b"fake-pptx"), "application/octet-stream")},
+        )
+
+    assert response.status_code == 502
+    assert "LibreOffice not found" in response.json()["detail"]
+
+
+def test_pptx_preview_never_persists_the_uploaded_file(tmp_path):
+    data_root = tmp_path / "data"
+    manager = JobManager(pipeline_fn=lambda **kwargs: {}, auto_start=False)
+    app = create_app(job_manager=manager, data_root=str(data_root), frontend_dist=None)
+    client = TestClient(app)
+
+    with patch("ppt2course.server.render_pptx_thumbnails", return_value=[b"\x89PNG"]):
+        client.post(
+            "/api/pptx-preview",
+            files={"pptx": ("deck.pptx", io.BytesIO(b"fake-pptx"), "application/octet-stream")},
+        )
+
+    leftover_pptx = list(data_root.rglob("*.pptx")) if data_root.exists() else []
+    assert leftover_pptx == []
 
 
 def test_voice_preview_returns_audio_and_caches_by_voice(tmp_path):
