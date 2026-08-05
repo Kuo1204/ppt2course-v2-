@@ -3,6 +3,7 @@ import QRCode from "qrcode";
 import "./App.css";
 import { createJob, downloadUrl, extractScriptText, fetchVoicePreview, getJobStatus } from "./api";
 import { parseNumberedScript } from "./scriptParser";
+import { resolveDownloadUrl } from "./urlUtils";
 
 const SCRIPT_MODES = [
   { value: "NOTES", label: "使用投影片備忘稿", needsTexts: false, needsApiKey: false },
@@ -49,6 +50,13 @@ const RATE_MAX = 100;
 const VOLUME_MIN = -50;
 const VOLUME_MAX = 50;
 
+// Floors above 0 so a logo can never be dialed all the way down to invisible
+// without the user realizing it's still "on" — a barely-there watermark
+// beats a silently-vanished one.
+const LOGO_OPACITY_MIN = 10;
+const LOGO_OPACITY_MAX = 100;
+const LOGO_OPACITY_DEFAULT = 100;
+
 const GEMINI_API_KEY_URL = "https://aistudio.google.com/app/apikey";
 const POLL_INTERVAL_MS = 2000;
 
@@ -59,11 +67,7 @@ function formatPercent(n) {
 }
 
 function toAbsoluteUrl(path) {
-  try {
-    return new URL(path, window.location.origin).href;
-  } catch {
-    return path;
-  }
+  return resolveDownloadUrl(path, window.location.hostname, window.location.origin);
 }
 
 const STEPS = [
@@ -104,6 +108,7 @@ function App() {
   const [resolution, setResolution] = useState(RESOLUTIONS[0].value);
   const [fontSize, setFontSize] = useState(FONT_SIZES[1].value);
   const [logoFile, setLogoFile] = useState(null);
+  const [logoOpacity, setLogoOpacity] = useState(LOGO_OPACITY_DEFAULT);
   const [bgmFile, setBgmFile] = useState(null);
   const [introFile, setIntroFile] = useState(null);
   const [outroFile, setOutroFile] = useState(null);
@@ -236,7 +241,10 @@ function App() {
     form.append("resolution_width", width);
     form.append("resolution_height", height);
     form.append("font_size", String(fontSize));
-    if (logoFile) form.append("logo", logoFile);
+    if (logoFile) {
+      form.append("logo", logoFile);
+      form.append("logo_opacity", String(logoOpacity / 100));
+    }
     if (bgmFile) form.append("bgm", bgmFile);
     if (introFile) form.append("intro", introFile);
     if (outroFile) form.append("outro", outroFile);
@@ -354,6 +362,8 @@ function App() {
                 setFontSize={setFontSize}
                 logoFile={logoFile}
                 setLogoFile={setLogoFile}
+                logoOpacity={logoOpacity}
+                setLogoOpacity={setLogoOpacity}
                 bgmFile={bgmFile}
                 setBgmFile={setBgmFile}
                 introFile={introFile}
@@ -376,7 +386,7 @@ function App() {
                 resolutionLabel={resolutionLabel}
                 fontSizeLabel={fontSizeLabel}
                 extras={[
-                  logoFile && "Logo",
+                  logoFile && `Logo（透明度 ${logoOpacity}%）`,
                   bgmFile && "背景音樂",
                   introFile && "片頭",
                   outroFile && "片尾",
@@ -742,6 +752,8 @@ function ExtrasStep({
   setFontSize,
   logoFile,
   setLogoFile,
+  logoOpacity,
+  setLogoOpacity,
   bgmFile,
   setBgmFile,
   introFile,
@@ -783,7 +795,12 @@ function ExtrasStep({
           </select>
         </div>
 
-        <FileField label="Logo 圖片（右上角浮水印）" file={logoFile} onChange={setLogoFile} accept="image/*" />
+        <LogoField
+          file={logoFile}
+          onChange={setLogoFile}
+          opacity={logoOpacity}
+          setOpacity={setLogoOpacity}
+        />
         <FileField label="背景音樂" file={bgmFile} onChange={setBgmFile} accept="audio/*" />
         <FileField label="片頭影片" file={introFile} onChange={setIntroFile} accept="video/*" />
         <FileField label="片尾影片" file={outroFile} onChange={setOutroFile} accept="video/*" />
@@ -793,14 +810,92 @@ function ExtrasStep({
 }
 
 function FileField({ label, file, onChange, accept }) {
+  // Bumping this key remounts the native <input>, which is the only way to
+  // clear its internal file selection — without it, removing a file then
+  // picking that exact same file again silently does nothing (the browser
+  // only fires onChange when the selection actually changes).
+  const [resetKey, setResetKey] = useState(0);
+
+  function handleRemove() {
+    onChange(null);
+    setResetKey((k) => k + 1);
+  }
+
   return (
     <div className="field">
       <label>{label}</label>
       <div className="uploader">
-        <input type="file" accept={accept} onChange={(e) => onChange(e.target.files[0] || null)} />
+        <input
+          key={resetKey}
+          type="file"
+          accept={accept}
+          onChange={(e) => onChange(e.target.files[0] || null)}
+        />
         <span className="filename">{file ? file.name : "未選擇"}</span>
-        <span className="btn-mini">選擇</span>
+        {file ? (
+          <button type="button" className="btn-mini btn-mini-remove" onClick={handleRemove}>
+            移除
+          </button>
+        ) : (
+          <span className="btn-mini">選擇</span>
+        )}
       </div>
+    </div>
+  );
+}
+
+function LogoField({ file, onChange, opacity, setOpacity }) {
+  const [resetKey, setResetKey] = useState(0);
+  const previewUrls = useObjectUrls(file ? [file] : []);
+  const previewUrl = previewUrls[0];
+
+  function handleRemove() {
+    onChange(null);
+    setOpacity(LOGO_OPACITY_DEFAULT);
+    setResetKey((k) => k + 1);
+  }
+
+  return (
+    <div className="field full">
+      <label>Logo 圖片（右上角浮水印）</label>
+      <div className="uploader">
+        <input
+          key={resetKey}
+          type="file"
+          accept="image/*"
+          onChange={(e) => onChange(e.target.files[0] || null)}
+        />
+        <span className="filename">{file ? file.name : "未選擇"}</span>
+        {file ? (
+          <button type="button" className="btn-mini btn-mini-remove" onClick={handleRemove}>
+            移除
+          </button>
+        ) : (
+          <span className="btn-mini">選擇</span>
+        )}
+      </div>
+
+      {file && (
+        <div className="logo-preview">
+          <div className="logo-preview-frame">
+            <img src={previewUrl} alt="Logo 預覽" style={{ opacity: opacity / 100 }} />
+          </div>
+          <div className="logo-opacity-control">
+            <label htmlFor="logo-opacity-range">
+              透明度 <span className="hint">{opacity}%</span>
+            </label>
+            <input
+              id="logo-opacity-range"
+              type="range"
+              min={LOGO_OPACITY_MIN}
+              max={LOGO_OPACITY_MAX}
+              step={5}
+              value={opacity}
+              onChange={(e) => setOpacity(Number(e.target.value))}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }

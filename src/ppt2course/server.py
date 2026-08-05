@@ -7,12 +7,14 @@ that one job and is never written to a job record or echoed back in any
 response.
 """
 
+import base64
 import json
 import os
+import secrets
 import uuid
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -26,6 +28,7 @@ from ppt2course.video import (
     DEFAULT_FONT_SIZE,
     DEFAULT_FPS,
     DEFAULT_LOGO_MARGIN,
+    DEFAULT_LOGO_OPACITY,
     DEFAULT_LOGO_WIDTH,
     DEFAULT_RESOLUTION,
     DEFAULT_TRANSITION,
@@ -38,6 +41,12 @@ DEFAULT_FRONTEND_DIST = os.environ.get(
     "PPT2COURSE_FRONTEND_DIST", str(Path(__file__).resolve().parents[2] / "frontend" / "dist")
 )
 ALLOWED_DOWNLOAD_TYPES = {"mp4", "srt", "docx"}
+
+# Unset by default (no auth) so local dev/tests are unaffected; set both env
+# vars to gate the whole app (API + the mounted frontend) behind a shared
+# HTTP Basic Auth credential before exposing it beyond the local network.
+DEFAULT_BASIC_AUTH_USER = os.environ.get("PPT2COURSE_BASIC_AUTH_USER")
+DEFAULT_BASIC_AUTH_PASSWORD = os.environ.get("PPT2COURSE_BASIC_AUTH_PASSWORD")
 
 # Sample text per supported voice, used for the "preview this voice" button.
 # Kept as an explicit allow-list (rather than accepting any edge-tts voice
@@ -57,6 +66,8 @@ def create_app(
     data_root: str = DEFAULT_DATA_ROOT,
     frontend_dist: str | None = DEFAULT_FRONTEND_DIST,
     voice_preview_fn=synthesize_preview,
+    basic_auth_user: str | None = DEFAULT_BASIC_AUTH_USER,
+    basic_auth_password: str | None = DEFAULT_BASIC_AUTH_PASSWORD,
 ) -> FastAPI:
     app = FastAPI(title="PPT2Course AI")
     app.state.job_manager = job_manager if job_manager is not None else JobManager()
@@ -69,6 +80,19 @@ def create_app(
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    if basic_auth_user and basic_auth_password:
+
+        @app.middleware("http")
+        async def require_basic_auth(request: Request, call_next):
+            if not _has_valid_basic_auth(
+                request.headers.get("authorization", ""), basic_auth_user, basic_auth_password
+            ):
+                return Response(
+                    status_code=401,
+                    headers={"WWW-Authenticate": 'Basic realm="PPT2Course AI"'},
+                )
+            return await call_next(request)
 
     @app.post("/api/jobs")
     async def create_job(
@@ -90,6 +114,7 @@ def create_app(
         font_size: int = Form(DEFAULT_FONT_SIZE),
         logo_width: int = Form(DEFAULT_LOGO_WIDTH),
         logo_margin: int = Form(DEFAULT_LOGO_MARGIN),
+        logo_opacity: float = Form(DEFAULT_LOGO_OPACITY),
         bgm_volume: float = Form(DEFAULT_BGM_VOLUME),
         logo: UploadFile | None = File(None),
         bgm: UploadFile | None = File(None),
@@ -148,6 +173,7 @@ def create_app(
             logo_path=logo_path,
             logo_width=logo_width,
             logo_margin=logo_margin,
+            logo_opacity=logo_opacity,
             bgm_path=bgm_path,
             bgm_volume=bgm_volume,
             intro_path=intro_path,
@@ -217,6 +243,19 @@ def create_app(
         app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="frontend")
 
     return app
+
+
+def _has_valid_basic_auth(header: str, expected_user: str, expected_password: str) -> bool:
+    if not header.startswith("Basic "):
+        return False
+    try:
+        decoded = base64.b64decode(header.removeprefix("Basic ")).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return False
+    user, _, password = decoded.partition(":")
+    return secrets.compare_digest(user, expected_user) and secrets.compare_digest(
+        password, expected_password
+    )
 
 
 async def _save_upload(upload: UploadFile, dest_path: str) -> None:

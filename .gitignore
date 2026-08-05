@@ -8,5 +8,5 @@ frontend/node_modules/
 frontend/dist/
 
 # runtime job uploads/outputs (per-deployment, not source)
-data/jobs/
+data/
 

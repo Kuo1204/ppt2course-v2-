@@ -1,3 +1,4 @@
+import base64
 import io
 from urllib.parse import quote
 
@@ -73,6 +74,41 @@ def test_create_job_forwards_voice_rate_and_volume(tmp_path):
     assert calls[0]["voice_rate"] == "+20%"
     assert calls[0]["voice_volume"] == "-10%"
     assert calls[0]["font_size"] == 60
+
+
+def test_create_job_forwards_logo_opacity(tmp_path):
+    calls = []
+
+    def fake_pipeline(**kwargs):
+        calls.append(kwargs)
+        return {}
+
+    client, manager = _make_client(fake_pipeline, tmp_path)
+
+    client.post(
+        "/api/jobs",
+        data=_upload_form(logo_opacity="0.35"),
+        files={**_upload_files(), "logo": ("logo.png", io.BytesIO(b"fake-png"), "image/png")},
+    )
+    manager.process_next()
+
+    assert calls[0]["logo_opacity"] == 0.35
+    assert calls[0]["logo_path"] is not None
+
+
+def test_create_job_defaults_logo_opacity_to_fully_opaque(tmp_path):
+    calls = []
+
+    def fake_pipeline(**kwargs):
+        calls.append(kwargs)
+        return {}
+
+    client, manager = _make_client(fake_pipeline, tmp_path)
+
+    client.post("/api/jobs", data=_upload_form(), files=_upload_files())
+    manager.process_next()
+
+    assert calls[0]["logo_opacity"] == 1.0
 
 
 def test_get_job_status_queued_before_processing(tmp_path):
@@ -382,3 +418,95 @@ def test_gemini_api_key_reaches_pipeline_but_never_echoed_in_status(tmp_path):
 
     response = client.get(f"/api/jobs/{job_id}")
     assert "super-secret-key" not in response.text
+
+
+# ---------- basic auth gate (opt-in, for exposing the app publicly) ----------
+
+
+def _basic_auth_header(user, password):
+    token = base64.b64encode(f"{user}:{password}".encode()).decode()
+    return {"Authorization": f"Basic {token}"}
+
+
+def test_no_auth_required_when_not_configured(tmp_path):
+    manager = JobManager(pipeline_fn=lambda **kw: None, auto_start=False)
+    app = create_app(job_manager=manager, data_root=str(tmp_path / "data"), frontend_dist=None)
+    client = TestClient(app)
+
+    response = client.get("/api/jobs/does-not-exist")
+
+    assert response.status_code == 404  # reached the route rather than being blocked by auth
+
+
+def test_rejects_request_without_credentials_when_auth_configured(tmp_path):
+    manager = JobManager(pipeline_fn=lambda **kw: None, auto_start=False)
+    app = create_app(
+        job_manager=manager,
+        data_root=str(tmp_path / "data"),
+        frontend_dist=None,
+        basic_auth_user="admin",
+        basic_auth_password="s3cret",
+    )
+    client = TestClient(app)
+
+    response = client.get("/api/jobs/does-not-exist")
+
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"].startswith("Basic")
+
+
+def test_rejects_wrong_credentials(tmp_path):
+    manager = JobManager(pipeline_fn=lambda **kw: None, auto_start=False)
+    app = create_app(
+        job_manager=manager,
+        data_root=str(tmp_path / "data"),
+        frontend_dist=None,
+        basic_auth_user="admin",
+        basic_auth_password="s3cret",
+    )
+    client = TestClient(app)
+
+    response = client.get(
+        "/api/jobs/does-not-exist", headers=_basic_auth_header("admin", "wrong-password")
+    )
+
+    assert response.status_code == 401
+
+
+def test_accepts_correct_credentials(tmp_path):
+    manager = JobManager(pipeline_fn=lambda **kw: None, auto_start=False)
+    app = create_app(
+        job_manager=manager,
+        data_root=str(tmp_path / "data"),
+        frontend_dist=None,
+        basic_auth_user="admin",
+        basic_auth_password="s3cret",
+    )
+    client = TestClient(app)
+
+    response = client.get(
+        "/api/jobs/does-not-exist", headers=_basic_auth_header("admin", "s3cret")
+    )
+
+    assert response.status_code == 404  # past the auth gate, reached the route
+
+
+def test_auth_gate_also_protects_the_mounted_frontend(tmp_path):
+    manager = JobManager(pipeline_fn=lambda **kw: None, auto_start=False)
+    frontend_dir = tmp_path / "dist"
+    frontend_dir.mkdir()
+    (frontend_dir / "index.html").write_text("<html>app</html>", encoding="utf-8")
+    app = create_app(
+        job_manager=manager,
+        data_root=str(tmp_path / "data"),
+        frontend_dist=str(frontend_dir),
+        basic_auth_user="admin",
+        basic_auth_password="s3cret",
+    )
+    client = TestClient(app)
+
+    unauthenticated = client.get("/")
+    authenticated = client.get("/", headers=_basic_auth_header("admin", "s3cret"))
+
+    assert unauthenticated.status_code == 401
+    assert authenticated.status_code == 200
