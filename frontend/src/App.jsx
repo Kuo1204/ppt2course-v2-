@@ -1,7 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import QRCode from "qrcode";
 import "./App.css";
-import { createJob, downloadUrl, extractScriptText, fetchVoicePreview, getJobStatus } from "./api";
+import {
+  createJob,
+  downloadUrl,
+  extractScriptText,
+  fetchVoicePreview,
+  generateScriptPreview,
+  getJobStatus,
+} from "./api";
 import { parseNumberedScript } from "./scriptParser";
 import { resolveDownloadUrl } from "./urlUtils";
 
@@ -99,6 +106,8 @@ function App() {
   const [perSlideTexts, setPerSlideTexts] = useState([]);
   const [pasteText, setPasteText] = useState("");
   const [pasteError, setPasteError] = useState(null);
+  const [scriptPreviewStatus, setScriptPreviewStatus] = useState("idle"); // idle | loading | done | error
+  const [scriptPreviewError, setScriptPreviewError] = useState(null);
   const [geminiApiKey, setGeminiApiKey] = useState("");
   const [voice, setVoice] = useState(VOICES[0].value);
   const [voiceRate, setVoiceRate] = useState(0);
@@ -126,6 +135,37 @@ function App() {
   const transitionLabel = TRANSITIONS.find((t) => t.value === transition)?.label;
   const resolutionLabel = RESOLUTIONS.find((r) => r.value === resolution)?.label;
   const fontSizeLabel = FONT_SIZES.find((f) => f.value === fontSize)?.label;
+  const usesAiGeneration = scriptMode === "AUTO" || scriptMode === "POLISH";
+
+  // A previously-generated preview only reflects the deck/slide-count it was
+  // generated from — re-uploading the deck or switching modes invalidates
+  // it. Editing the generated text itself must NOT reset this: that's the
+  // "review and tweak before continuing" flow this whole feature is for.
+  useEffect(() => {
+    setScriptPreviewStatus("idle");
+    setScriptPreviewError(null);
+  }, [scriptMode, pptxFile, imageFiles.length]);
+
+  async function handleGenerateScriptPreview() {
+    setScriptPreviewStatus("loading");
+    setScriptPreviewError(null);
+    try {
+      const { texts } = await generateScriptPreview({
+        pptxFile,
+        scriptMode,
+        geminiApiKey,
+        geminiModel: undefined,
+        texts: scriptMode === "POLISH" ? perSlideTexts : undefined,
+      });
+      setPerSlideTexts(texts);
+      setTextInputMode("perSlide");
+      setScriptPreviewStatus("done");
+      setFormError(null); // clears the stale "請先產生預覽" banner from an earlier blocked "下一步" click
+    } catch (err) {
+      setScriptPreviewError(err.message);
+      setScriptPreviewStatus("error");
+    }
+  }
 
   useEffect(() => {
     if (!modeConfig.needsTexts || textInputMode !== "perSlide") return;
@@ -199,6 +239,8 @@ function App() {
     setIntroFile(null);
     setOutroFile(null);
     setSubmitting(false);
+    setScriptPreviewStatus("idle");
+    setScriptPreviewError(null);
   }
 
   function validateStep(step) {
@@ -209,7 +251,21 @@ function App() {
     }
     if (step === 2) {
       if (modeConfig.needsApiKey && !geminiApiKey.trim()) return "此模式需要 Gemini API Key";
-      if (modeConfig.needsTexts) {
+
+      if (scriptMode === "POLISH") {
+        if (textInputMode === "paste") {
+          if (!pasteText.trim()) return "請貼上包含頁碼標記的講稿草稿";
+          if (pasteError) return pasteError;
+        } else if (perSlideTexts.some((t) => !t.trim())) {
+          return "請為每一頁投影片輸入草稿";
+        }
+      }
+
+      if (usesAiGeneration && scriptPreviewStatus !== "done") {
+        return "請先產生 AI 講稿預覽，確認內容後再繼續下一步";
+      }
+
+      if (scriptMode === "OWN") {
         if (textInputMode === "paste") {
           if (!pasteText.trim()) return "請貼上包含頁碼標記的講稿";
           if (pasteError) return pasteError;
@@ -248,18 +304,27 @@ function App() {
 
     const [width, height] = resolution.split("x");
 
+    // Once an AI-generated script has been previewed (and possibly edited),
+    // submit exactly what was reviewed — as OWN — instead of asking the
+    // backend to call Gemini a second time during the pipeline run. That
+    // would be slower, cost another API call, and since generation isn't
+    // deterministic, could silently produce different text than what the
+    // user actually approved on screen.
+    const usedAiPreview = usesAiGeneration && scriptPreviewStatus === "done";
+    const effectiveScriptMode = usedAiPreview ? "OWN" : scriptMode;
+
     const form = new FormData();
     form.append("pptx", pptxFile);
     imageFiles.forEach((file) => form.append("images", file));
-    form.append("script_mode", scriptMode);
+    form.append("script_mode", effectiveScriptMode);
     form.append("voice", voice);
     form.append("rate", formatPercent(voiceRate));
     form.append("volume", formatPercent(voiceVolume));
     form.append("base_name", baseName || "課程");
-    if (modeConfig.needsTexts) {
+    if (usedAiPreview || modeConfig.needsTexts) {
       form.append("texts", JSON.stringify(perSlideTexts));
     }
-    if (modeConfig.needsApiKey) {
+    if (!usedAiPreview && modeConfig.needsApiKey) {
       form.append("gemini_api_key", geminiApiKey);
     }
     form.append("transition", transition);
@@ -362,6 +427,10 @@ function App() {
                 pasteText={pasteText}
                 setPasteText={setPasteText}
                 pasteError={pasteError}
+                usesAiGeneration={usesAiGeneration}
+                onGeneratePreview={handleGenerateScriptPreview}
+                scriptPreviewStatus={scriptPreviewStatus}
+                scriptPreviewError={scriptPreviewError}
               />
             )}
 
@@ -514,6 +583,38 @@ function UploadStep({ pptxFile, setPptxFile, imageFiles, setImageFiles, thumbUrl
   );
 }
 
+function PerSlideTextEditor({ slideCount, perSlideTexts, setPerSlideTexts }) {
+  return (
+    <div className="per-slide-texts">
+      {Array.from({ length: slideCount }).map((_, i) => (
+        <div key={i} className="field">
+          <label>第 {i + 1} 頁</label>
+          <textarea
+            rows={2}
+            value={perSlideTexts[i] || ""}
+            onChange={(e) => {
+              const next = [...perSlideTexts];
+              next[i] = e.target.value;
+              setPerSlideTexts(next);
+            }}
+          />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function GenerateScriptButton({ label, loadingLabel, disabled, status, error, onClick }) {
+  return (
+    <div className="field full">
+      <button type="button" className="btn btn-ghost" disabled={disabled} onClick={onClick}>
+        {status === "loading" ? loadingLabel : label}
+      </button>
+      {status === "error" && <p className="form-error" style={{ margin: "8px 0 0" }}>{error}</p>}
+    </div>
+  );
+}
+
 function ScriptStep({
   slideCount,
   scriptMode,
@@ -528,8 +629,14 @@ function ScriptStep({
   pasteText,
   setPasteText,
   pasteError,
+  usesAiGeneration,
+  onGeneratePreview,
+  scriptPreviewStatus,
+  scriptPreviewError,
 }) {
   const detectedCount = perSlideTexts.filter((t) => t.trim()).length;
+  const hasDraftText =
+    textInputMode === "paste" ? pasteText.trim().length > 0 : perSlideTexts.some((t) => t.trim());
 
   return (
     <>
@@ -571,6 +678,30 @@ function ScriptStep({
           </div>
         )}
 
+        {scriptMode === "AUTO" && slideCount > 0 && (
+          <GenerateScriptButton
+            label="產生 AI 講稿預覽"
+            loadingLabel="AI 生成中，請稍候..."
+            disabled={!geminiApiKey.trim() || scriptPreviewStatus === "loading"}
+            status={scriptPreviewStatus}
+            error={scriptPreviewError}
+            onClick={onGeneratePreview}
+          />
+        )}
+
+        {scriptMode === "AUTO" && scriptPreviewStatus === "done" && slideCount > 0 && (
+          <div className="field full">
+            <label>
+              AI 產生的講稿 <span className="hint">— 可直接修改，滿意後再繼續下一步</span>
+            </label>
+            <PerSlideTextEditor
+              slideCount={slideCount}
+              perSlideTexts={perSlideTexts}
+              setPerSlideTexts={setPerSlideTexts}
+            />
+          </div>
+        )}
+
         {modeConfig.needsTexts && slideCount > 0 && (
           <div className="field full">
             <div className="tab-group" role="tablist">
@@ -595,22 +726,11 @@ function ScriptStep({
             </div>
 
             {textInputMode === "perSlide" ? (
-              <div className="per-slide-texts">
-                {Array.from({ length: slideCount }).map((_, i) => (
-                  <div key={i} className="field">
-                    <label>第 {i + 1} 頁</label>
-                    <textarea
-                      rows={2}
-                      value={perSlideTexts[i] || ""}
-                      onChange={(e) => {
-                        const next = [...perSlideTexts];
-                        next[i] = e.target.value;
-                        setPerSlideTexts(next);
-                      }}
-                    />
-                  </div>
-                ))}
-              </div>
+              <PerSlideTextEditor
+                slideCount={slideCount}
+                perSlideTexts={perSlideTexts}
+                setPerSlideTexts={setPerSlideTexts}
+              />
             ) : (
               <div className="field">
                 <label htmlFor="paste-script-input">
@@ -641,6 +761,25 @@ function ScriptStep({
                 )}
               </div>
             )}
+          </div>
+        )}
+
+        {scriptMode === "POLISH" && slideCount > 0 && (
+          <GenerateScriptButton
+            label={scriptPreviewStatus === "done" ? "重新產生 AI 潤飾預覽" : "產生 AI 潤飾預覽"}
+            loadingLabel="AI 潤飾中，請稍候..."
+            disabled={!geminiApiKey.trim() || !hasDraftText || scriptPreviewStatus === "loading"}
+            status={scriptPreviewStatus}
+            error={scriptPreviewError}
+            onClick={onGeneratePreview}
+          />
+        )}
+
+        {usesAiGeneration && scriptPreviewStatus === "done" && (
+          <div className="field full">
+            <p className="status-caption">
+              ✓ 已產生預覽，可直接修改上方文字，確認沒問題後按「下一步」繼續
+            </p>
           </div>
         )}
       </div>

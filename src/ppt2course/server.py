@@ -13,6 +13,7 @@ import json
 import os
 import re
 import secrets
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -23,8 +24,14 @@ from fastapi.staticfiles import StaticFiles
 
 from ppt2course.jobs import JobManager, JobStatus
 from ppt2course.script_extract import ScriptExtractionError, extract_text_from_file
-from ppt2course.script_gen import DEFAULT_GEMINI_MODEL, ScriptMode
+from ppt2course.script_gen import (
+    DEFAULT_GEMINI_MODEL,
+    ScriptGenerationError,
+    ScriptMode,
+    generate_script,
+)
 from ppt2course.tts import DEFAULT_RATE, DEFAULT_VOLUME, TtsError, synthesize_preview
+from ppt2course.upload import PptParseError, parse_ppt
 from ppt2course.video import (
     DEFAULT_BGM_VOLUME,
     DEFAULT_FONT_SIZE,
@@ -264,6 +271,50 @@ def create_app(
         except ScriptExtractionError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"text": text}
+
+    @app.post("/api/generate-script")
+    async def generate_script_preview(
+        pptx: UploadFile = File(...),
+        script_mode: str = Form(...),
+        gemini_api_key: str = Form(...),
+        gemini_model: str = Form(DEFAULT_GEMINI_MODEL),
+        texts: str | None = Form(None),
+    ):
+        # Runs only the Gemini call, synchronously — not the whole pipeline —
+        # so the user can see what the AI actually wrote and choose to
+        # continue (or fix it) before ever submitting a job. The key is used
+        # for this one call and never written anywhere or echoed back.
+        try:
+            mode = ScriptMode[script_mode]
+        except KeyError:
+            raise HTTPException(status_code=400, detail=f"invalid script_mode: {script_mode}")
+        if mode not in (ScriptMode.AUTO, ScriptMode.POLISH):
+            raise HTTPException(
+                status_code=400,
+                detail=f"script preview is only available for AUTO/POLISH, got {script_mode}",
+            )
+
+        parsed_texts = json.loads(texts) if texts else None
+
+        with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as tmp:
+            tmp.write(await pptx.read())
+            pptx_path = tmp.name
+        try:
+            try:
+                slides = parse_ppt(pptx_path)
+            except PptParseError as exc:
+                raise HTTPException(status_code=400, detail=f"failed to parse PPT: {exc}") from exc
+        finally:
+            os.unlink(pptx_path)
+
+        try:
+            generated_texts = generate_script(
+                mode, slides, texts=parsed_texts, api_key=gemini_api_key, model=gemini_model
+            )
+        except ScriptGenerationError as exc:
+            raise HTTPException(status_code=502, detail=f"script generation failed: {exc}") from exc
+
+        return {"texts": generated_texts}
 
     @app.get("/api/voice-preview/{voice}")
     def voice_preview(voice: str, rate: str = DEFAULT_RATE, volume: str = DEFAULT_VOLUME):

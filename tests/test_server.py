@@ -1,13 +1,17 @@
 import base64
 import io
+import json
+from unittest.mock import patch
 from urllib.parse import quote
 
 from fastapi.testclient import TestClient
 
 from ppt2course.jobs import JobManager
 from ppt2course.pipeline import PipelineError
+from ppt2course.script_gen import ScriptGenerationError, ScriptMode
 from ppt2course.server import create_app
 from ppt2course.tts import TtsError
+from ppt2course.upload import PptParseError, SlideContent
 
 
 def _make_client(pipeline_fn, tmp_path):
@@ -437,6 +441,140 @@ def test_extract_script_text_rejects_unsupported_extension(tmp_path):
         files={"file": ("script.pdf", io.BytesIO(b"whatever"), "application/pdf")},
     )
     assert response.status_code == 400
+
+
+# ---------- AI script preview (AUTO / POLISH) ----------
+# Generating the whole video just to find out what the AI wrote meant the
+# user couldn't review or fix a bad script until the entire pipeline had
+# already run. This endpoint runs only the Gemini call, synchronously, so
+# the UI can show the result and let the user continue (or not) before ever
+# submitting a job.
+
+
+def test_generate_script_preview_auto_mode_returns_generated_texts(tmp_path):
+    manager = JobManager(pipeline_fn=lambda **kwargs: {}, auto_start=False)
+    app = create_app(job_manager=manager, data_root=str(tmp_path / "data"), frontend_dist=None)
+    client = TestClient(app)
+
+    fake_slides = [SlideContent(index=1, text="投影片一", notes="")]
+    with patch("ppt2course.server.parse_ppt", return_value=fake_slides):
+        with patch(
+            "ppt2course.server.generate_script", return_value=["AI 寫的講稿"]
+        ) as mock_generate:
+            response = client.post(
+                "/api/generate-script",
+                data={"script_mode": "AUTO", "gemini_api_key": "secret-key"},
+                files={"pptx": ("deck.pptx", io.BytesIO(b"fake-pptx"), "application/octet-stream")},
+            )
+
+    assert response.status_code == 200
+    assert response.json() == {"texts": ["AI 寫的講稿"]}
+    assert mock_generate.call_args.args[0] == ScriptMode.AUTO
+    assert mock_generate.call_args.kwargs["api_key"] == "secret-key"
+
+
+def test_generate_script_preview_polish_mode_forwards_input_texts(tmp_path):
+    manager = JobManager(pipeline_fn=lambda **kwargs: {}, auto_start=False)
+    app = create_app(job_manager=manager, data_root=str(tmp_path / "data"), frontend_dist=None)
+    client = TestClient(app)
+
+    fake_slides = [SlideContent(index=1, text="投影片一", notes="")]
+    with patch("ppt2course.server.parse_ppt", return_value=fake_slides):
+        with patch(
+            "ppt2course.server.generate_script", return_value=["潤飾後的講稿"]
+        ) as mock_generate:
+            response = client.post(
+                "/api/generate-script",
+                data={
+                    "script_mode": "POLISH",
+                    "gemini_api_key": "secret-key",
+                    "texts": json.dumps(["我自己寫的草稿"]),
+                },
+                files={"pptx": ("deck.pptx", io.BytesIO(b"fake-pptx"), "application/octet-stream")},
+            )
+
+    assert response.status_code == 200
+    assert response.json() == {"texts": ["潤飾後的講稿"]}
+    assert mock_generate.call_args.kwargs["texts"] == ["我自己寫的草稿"]
+
+
+def test_generate_script_preview_rejects_notes_and_own_modes(tmp_path):
+    manager = JobManager(pipeline_fn=lambda **kwargs: {}, auto_start=False)
+    app = create_app(job_manager=manager, data_root=str(tmp_path / "data"), frontend_dist=None)
+    client = TestClient(app)
+
+    for mode in ("NOTES", "OWN"):
+        response = client.post(
+            "/api/generate-script",
+            data={"script_mode": mode, "gemini_api_key": "secret-key"},
+            files={"pptx": ("deck.pptx", io.BytesIO(b"fake-pptx"), "application/octet-stream")},
+        )
+        assert response.status_code == 400
+
+
+def test_generate_script_preview_invalid_script_mode_returns_400(tmp_path):
+    manager = JobManager(pipeline_fn=lambda **kwargs: {}, auto_start=False)
+    app = create_app(job_manager=manager, data_root=str(tmp_path / "data"), frontend_dist=None)
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/generate-script",
+        data={"script_mode": "NOT_A_MODE", "gemini_api_key": "secret-key"},
+        files={"pptx": ("deck.pptx", io.BytesIO(b"fake-pptx"), "application/octet-stream")},
+    )
+    assert response.status_code == 400
+
+
+def test_generate_script_preview_wraps_ppt_parse_error(tmp_path):
+    manager = JobManager(pipeline_fn=lambda **kwargs: {}, auto_start=False)
+    app = create_app(job_manager=manager, data_root=str(tmp_path / "data"), frontend_dist=None)
+    client = TestClient(app)
+
+    with patch("ppt2course.server.parse_ppt", side_effect=PptParseError("bad pptx")):
+        response = client.post(
+            "/api/generate-script",
+            data={"script_mode": "AUTO", "gemini_api_key": "secret-key"},
+            files={"pptx": ("deck.pptx", io.BytesIO(b"fake-pptx"), "application/octet-stream")},
+        )
+    assert response.status_code == 400
+
+
+def test_generate_script_preview_wraps_gemini_error(tmp_path):
+    manager = JobManager(pipeline_fn=lambda **kwargs: {}, auto_start=False)
+    app = create_app(job_manager=manager, data_root=str(tmp_path / "data"), frontend_dist=None)
+    client = TestClient(app)
+
+    fake_slides = [SlideContent(index=1, text="投影片一", notes="")]
+    with patch("ppt2course.server.parse_ppt", return_value=fake_slides):
+        with patch(
+            "ppt2course.server.generate_script",
+            side_effect=ScriptGenerationError("Gemini API call failed: boom"),
+        ):
+            response = client.post(
+                "/api/generate-script",
+                data={"script_mode": "AUTO", "gemini_api_key": "secret-key"},
+                files={"pptx": ("deck.pptx", io.BytesIO(b"fake-pptx"), "application/octet-stream")},
+            )
+    assert response.status_code == 502
+    assert "boom" in response.json()["detail"]
+
+
+def test_generate_script_preview_never_stores_the_api_key(tmp_path):
+    # Same guarantee job creation already gives: the key reaches the call
+    # but is never echoed back in the response.
+    manager = JobManager(pipeline_fn=lambda **kwargs: {}, auto_start=False)
+    app = create_app(job_manager=manager, data_root=str(tmp_path / "data"), frontend_dist=None)
+    client = TestClient(app)
+
+    fake_slides = [SlideContent(index=1, text="投影片一", notes="")]
+    with patch("ppt2course.server.parse_ppt", return_value=fake_slides):
+        with patch("ppt2course.server.generate_script", return_value=["text"]):
+            response = client.post(
+                "/api/generate-script",
+                data={"script_mode": "AUTO", "gemini_api_key": "super-secret-key"},
+                files={"pptx": ("deck.pptx", io.BytesIO(b"fake-pptx"), "application/octet-stream")},
+            )
+    assert "super-secret-key" not in response.text
 
 
 def test_voice_preview_returns_audio_and_caches_by_voice(tmp_path):

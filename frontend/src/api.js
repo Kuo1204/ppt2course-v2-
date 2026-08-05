@@ -46,6 +46,27 @@ export async function extractScriptText(file) {
   return response.json();
 }
 
+export async function generateScriptPreview({ pptxFile, scriptMode, geminiApiKey, geminiModel, texts }) {
+  const form = new FormData();
+  form.append("pptx", pptxFile);
+  form.append("script_mode", scriptMode);
+  form.append("gemini_api_key", geminiApiKey);
+  if (geminiModel) form.append("gemini_model", geminiModel);
+  if (texts) form.append("texts", JSON.stringify(texts));
+
+  const response = await fetch(`${API_BASE_URL}/api/generate-script`, {
+    method: "POST",
+    body: form,
+  });
+
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.detail || `講稿生成失敗 (HTTP ${response.status})`);
+  }
+
+  return response.json();
+}
+
 export async function fetchVoicePreview(voice, rate, volume) {
   const params = new URLSearchParams();
   if (rate) params.set("rate", rate);
