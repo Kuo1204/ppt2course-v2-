@@ -1094,9 +1094,13 @@ function HelpWidget() {
   );
 }
 
-function MobileDownloadQr({ mp4Path }) {
+function MobileDownloadQr({ jobId }) {
   const canvasRef = useRef(null);
-  const absoluteUrl = toAbsoluteUrl(downloadUrl(mp4Path));
+  // Points at the /share landing page, not the raw download link directly —
+  // a QR scanner's in-app browser silently triggers-and-abandons a direct
+  // attachment download (blank tab, no confirmation). /share gives the
+  // phone something to land on and choose preview or download from.
+  const absoluteUrl = toAbsoluteUrl(`/share/${jobId}`);
 
   useEffect(() => {
     if (!canvasRef.current) return;
@@ -1142,7 +1146,7 @@ function StatusView({ jobId, jobStatus, isRunning, isDone, isError, onReset }) {
               </a>
             ))}
           </div>
-          {jobStatus.downloads.mp4 && <MobileDownloadQr mp4Path={jobStatus.downloads.mp4} />}
+          {jobStatus.downloads.mp4 && <MobileDownloadQr jobId={jobId} />}
         </>
       )}
 

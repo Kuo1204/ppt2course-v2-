@@ -227,6 +227,130 @@ def test_download_unknown_filetype_returns_404(tmp_path):
     assert response.status_code == 404
 
 
+# ---------- inline "view" (video preview) and the /share landing page ----------
+# Scanning the QR code used to link straight to the attachment-disposition
+# download route, so the phone's browser silently triggered a download and
+# left a blank tab behind — no confirmation, no way to preview first. /share
+# gives the phone something to actually land on: a page that asks whether to
+# preview or download.
+
+
+def test_view_file_after_done_uses_inline_not_attachment_disposition(tmp_path):
+    out_file = tmp_path / "課程.mp4"
+    out_file.write_bytes(b"video-bytes")
+
+    def fake_pipeline(**kwargs):
+        return {"mp4": str(out_file)}
+
+    client, manager = _make_client(fake_pipeline, tmp_path)
+    job_id = client.post("/api/jobs", data=_upload_form(), files=_upload_files()).json()["job_id"]
+    manager.process_next()
+
+    response = client.get(f"/api/jobs/{job_id}/view/mp4")
+    assert response.status_code == 200
+    assert response.content == b"video-bytes"
+    disposition = response.headers.get("content-disposition", "")
+    assert not disposition.startswith("attachment")
+
+
+def test_view_before_done_returns_404(tmp_path):
+    client, manager = _make_client(lambda **kwargs: {"mp4": "x"}, tmp_path)
+    job_id = client.post("/api/jobs", data=_upload_form(), files=_upload_files()).json()["job_id"]
+
+    response = client.get(f"/api/jobs/{job_id}/view/mp4")
+    assert response.status_code == 404
+
+
+def test_view_unknown_filetype_returns_404(tmp_path):
+    def fake_pipeline(**kwargs):
+        return {"mp4": "x"}
+
+    client, manager = _make_client(fake_pipeline, tmp_path)
+    job_id = client.post("/api/jobs", data=_upload_form(), files=_upload_files()).json()["job_id"]
+    manager.process_next()
+
+    response = client.get(f"/api/jobs/{job_id}/view/exe")
+    assert response.status_code == 404
+
+
+def test_share_page_when_done_offers_preview_and_download(tmp_path):
+    out_file = tmp_path / "課程.mp4"
+    out_file.write_bytes(b"video-bytes")
+
+    def fake_pipeline(**kwargs):
+        return {"mp4": str(out_file)}
+
+    client, manager = _make_client(fake_pipeline, tmp_path)
+    job_id = client.post("/api/jobs", data=_upload_form(), files=_upload_files()).json()["job_id"]
+    manager.process_next()
+
+    response = client.get(f"/share/{job_id}")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert f"/api/jobs/{job_id}/view/mp4" in response.text
+    assert f"/api/jobs/{job_id}/download/mp4" in response.text
+
+
+def test_share_page_still_processing_shows_wait_message_not_a_blank_page(tmp_path):
+    client, manager = _make_client(lambda **kwargs: {"mp4": "x"}, tmp_path)
+    job_id = client.post("/api/jobs", data=_upload_form(), files=_upload_files()).json()["job_id"]
+
+    response = client.get(f"/share/{job_id}")
+
+    assert response.status_code == 200
+    assert "製作中" in response.text
+
+
+def test_share_page_error_status_shows_the_error_message(tmp_path):
+    def fake_pipeline(**kwargs):
+        raise PipelineError("boom")
+
+    client, manager = _make_client(fake_pipeline, tmp_path)
+    job_id = client.post("/api/jobs", data=_upload_form(), files=_upload_files()).json()["job_id"]
+    manager.process_next()
+
+    response = client.get(f"/share/{job_id}")
+
+    assert response.status_code == 200
+    assert "boom" in response.text
+
+
+def test_share_page_unknown_job_returns_a_friendly_404_page(tmp_path):
+    client, manager = _make_client(lambda **kwargs: {}, tmp_path)
+
+    response = client.get("/share/does-not-exist")
+
+    assert response.status_code == 404
+    assert response.headers["content-type"].startswith("text/html")
+
+
+def test_view_and_share_routes_are_exempt_from_basic_auth(tmp_path):
+    out_file = tmp_path / "課程.mp4"
+    out_file.write_bytes(b"video-bytes")
+
+    def fake_pipeline(**kwargs):
+        return {"mp4": str(out_file)}
+
+    manager = JobManager(pipeline_fn=fake_pipeline, auto_start=False)
+    app = create_app(
+        job_manager=manager,
+        data_root=str(tmp_path / "data"),
+        frontend_dist=None,
+        basic_auth_user="admin",
+        basic_auth_password="s3cret",
+    )
+    client = TestClient(app)
+    job_id = client.post(
+        "/api/jobs", data=_upload_form(), files=_upload_files(),
+        headers=_basic_auth_header("admin", "s3cret"),
+    ).json()["job_id"]
+    manager.process_next()
+
+    assert client.get(f"/api/jobs/{job_id}/view/mp4").status_code == 200
+    assert client.get(f"/share/{job_id}").status_code == 200
+
+
 def test_serves_built_frontend_index_at_root(tmp_path):
     dist_dir = tmp_path / "dist"
     dist_dir.mkdir()

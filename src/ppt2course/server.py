@@ -8,6 +8,7 @@ response.
 """
 
 import base64
+import html as html_escape
 import json
 import os
 import re
@@ -17,7 +18,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from ppt2course.jobs import JobManager, JobStatus
@@ -43,20 +44,23 @@ DEFAULT_FRONTEND_DIST = os.environ.get(
 )
 ALLOWED_DOWNLOAD_TYPES = {"mp4", "srt", "docx"}
 
-# The mobile-download QR code links straight to this route. A phone's camera
-# app / QR scanner typically opens the link in a lightweight in-app browser
-# that doesn't render a Basic Auth login prompt for a direct file download —
-# the request just silently fails there. The job id is an unguessable UUID,
-# so exempting only this route (not job creation or anything else) keeps
-# "scan the QR, get the file" frictionless without weakening the gate on the
-# parts that actually cost compute.
-_DOWNLOAD_ROUTE_PATTERN = re.compile(
-    r"^/api/jobs/[^/]+/download/(?:" + "|".join(re.escape(t) for t in ALLOWED_DOWNLOAD_TYPES) + r")$"
+# The mobile-download QR code links to /share/{job_id}, which itself embeds
+# links to /download and /view. A phone's camera app / QR scanner typically
+# opens the link in a lightweight in-app browser that doesn't render a Basic
+# Auth login prompt — the request just silently fails there. The job id is an
+# unguessable UUID, so exempting only these routes (not job creation, not job
+# status, not anything else) keeps "scan the QR, land on a page, choose
+# preview or download" frictionless without weakening the gate on the parts
+# that actually cost compute.
+_DOWNLOAD_TYPES_ALTERNATION = "|".join(re.escape(t) for t in ALLOWED_DOWNLOAD_TYPES)
+_AUTH_EXEMPT_ROUTE_PATTERN = re.compile(
+    r"^/api/jobs/[^/]+/(?:download|view)/(?:" + _DOWNLOAD_TYPES_ALTERNATION + r")$"
+    r"|^/share/[^/]+$"
 )
 
 
-def _is_auth_exempt_download_route(path: str) -> bool:
-    return bool(_DOWNLOAD_ROUTE_PATTERN.match(path))
+def _is_auth_exempt_route(path: str) -> bool:
+    return bool(_AUTH_EXEMPT_ROUTE_PATTERN.match(path))
 
 # Unset by default (no auth) so local dev/tests are unaffected; set both env
 # vars to gate the whole app (API + the mounted frontend) behind a shared
@@ -101,7 +105,7 @@ def create_app(
 
         @app.middleware("http")
         async def require_basic_auth(request: Request, call_next):
-            if _is_auth_exempt_download_route(request.url.path) or _has_valid_basic_auth(
+            if _is_auth_exempt_route(request.url.path) or _has_valid_basic_auth(
                 request.headers.get("authorization", ""), basic_auth_user, basic_auth_password
             ):
                 return await call_next(request)
@@ -217,16 +221,40 @@ def create_app(
             return {"status": "error", "error": job.error}
         return {"status": job.status.value}
 
-    @app.get("/api/jobs/{job_id}/download/{filetype}")
-    def download_job_file(job_id: str, filetype: str):
+    def _resolve_job_file_path(job_id: str, filetype: str) -> str:
         manager: JobManager = app.state.job_manager
         job = manager.get(job_id)
         if job is None or job.status is not JobStatus.DONE:
             raise HTTPException(status_code=404, detail="file not available")
         if filetype not in ALLOWED_DOWNLOAD_TYPES or filetype not in job.result:
             raise HTTPException(status_code=404, detail="file not available")
-        path = job.result[filetype]
+        return job.result[filetype]
+
+    @app.get("/api/jobs/{job_id}/download/{filetype}")
+    def download_job_file(job_id: str, filetype: str):
+        path = _resolve_job_file_path(job_id, filetype)
         return FileResponse(path, filename=os.path.basename(path))
+
+    @app.get("/api/jobs/{job_id}/view/{filetype}")
+    def view_job_file(job_id: str, filetype: str):
+        # Same file as /download, but inline instead of attachment disposition
+        # so a <video> tag can stream/scrub it instead of the browser
+        # immediately saving it to disk. FileResponse handles Range requests
+        # for either disposition, which is what lets video seeking work.
+        path = _resolve_job_file_path(job_id, filetype)
+        return FileResponse(path, content_disposition_type="inline")
+
+    @app.get("/share/{job_id}", response_class=HTMLResponse)
+    def share_job_page(job_id: str):
+        manager: JobManager = app.state.job_manager
+        job = manager.get(job_id)
+        if job is None:
+            return HTMLResponse(_render_share_page_not_found(), status_code=404)
+        if job.status is JobStatus.DONE:
+            return HTMLResponse(_render_share_page_done(job_id, job.result))
+        if job.status is JobStatus.ERROR:
+            return HTMLResponse(_render_share_page_error(job.error))
+        return HTMLResponse(_render_share_page_processing())
 
     @app.post("/api/extract-script-text")
     async def extract_script_text(file: UploadFile = File(...)):
@@ -271,6 +299,99 @@ def _has_valid_basic_auth(header: str, expected_user: str, expected_password: st
     user, _, password = decoded.partition(":")
     return secrets.compare_digest(user, expected_user) and secrets.compare_digest(
         password, expected_password
+    )
+
+
+_SHARE_PAGE_LABELS = {"mp4": "課程影片 (.mp4)", "srt": "字幕檔 (.srt)", "docx": "逐字稿 (.docx)"}
+
+# Self-contained (no build step, no external assets) so it loads fast on a
+# phone straight off a QR scan and still renders if the SPA bundle can't.
+# Matches the app's own light/dark tokens for visual consistency.
+_SHARE_PAGE_STYLE = """
+  :root { --bg:#15130e; --surface:#1f1b14; --border:#3d3626; --text:#ede7d8;
+    --text-dim:#9c9385; --accent:#e8a33d; --state-error:#e8573f; }
+  @media (prefers-color-scheme: light) {
+    :root { --bg:#f5f1e6; --surface:#ffffff; --border:#ddd5c0; --text:#211d14;
+      --text-dim:#6b6355; --accent:#b8791f; --state-error:#c13a24; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+    padding:24px; background:var(--bg); color:var(--text);
+    font-family:-apple-system,"Segoe UI",Arial,sans-serif; }
+  .card { width:100%; max-width:420px; background:var(--surface); border:1px solid var(--border);
+    border-radius:8px; padding:24px; text-align:center; }
+  h1 { font-size:17px; margin:0 0 16px; }
+  video { width:100%; border-radius:6px; background:#000; margin-bottom:18px; }
+  .btn { display:block; width:100%; padding:14px; margin-bottom:10px; border-radius:4px;
+    font-weight:700; text-decoration:none; box-sizing:border-box; }
+  .btn-primary { background:var(--accent); color:var(--bg); }
+  .btn-secondary { background:transparent; color:var(--text-dim); border:1px solid var(--border); }
+  p { color:var(--text-dim); font-size:14px; line-height:1.6; }
+  .error { color:var(--state-error); }
+"""
+
+
+def _share_page_shell(body: str) -> str:
+    return (
+        "<!doctype html><html lang=\"zh-Hant\"><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+        "<title>PPT2Course AI</title>"
+        f"<style>{_SHARE_PAGE_STYLE}</style></head>"
+        f"<body><div class=\"card\">{body}</div></body></html>"
+    )
+
+
+def _render_share_page_done(job_id: str, result: dict) -> str:
+    video_html = (
+        f'<video controls playsinline preload="metadata" '
+        f'src="/api/jobs/{job_id}/view/mp4"></video>'
+        if "mp4" in result
+        else ""
+    )
+    buttons = []
+    if "mp4" in result:
+        buttons.append(
+            f'<a class="btn btn-primary" href="/api/jobs/{job_id}/download/mp4" download>下載影片</a>'
+        )
+    for filetype in ("srt", "docx"):
+        if filetype in result:
+            buttons.append(
+                f'<a class="btn btn-secondary" href="/api/jobs/{job_id}/download/{filetype}" download>'
+                f"下載{_SHARE_PAGE_LABELS[filetype]}</a>"
+            )
+    return _share_page_shell(
+        f"<h1>課程影片已完成</h1>{video_html}{''.join(buttons)}"
+    )
+
+
+def _render_share_page_processing() -> str:
+    body = (
+        "<h1>影片製作中</h1>"
+        "<p>還在處理中，請稍後再試，這個畫面會自動重新整理。</p>"
+    )
+    # No-JS-required auto-retry: plain <meta refresh> works even in the
+    # bare-bones in-app browser a QR scanner opens.
+    return (
+        "<!doctype html><html lang=\"zh-Hant\"><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+        '<meta http-equiv="refresh" content="5">'
+        "<title>PPT2Course AI</title>"
+        f"<style>{_SHARE_PAGE_STYLE}</style></head>"
+        f"<body><div class=\"card\">{body}</div></body></html>"
+    )
+
+
+def _render_share_page_error(error: str | None) -> str:
+    safe_error = html_escape.escape(error or "未知錯誤")
+    return _share_page_shell(
+        f'<h1>影片製作失敗</h1><p class="error">{safe_error}</p>'
+    )
+
+
+def _render_share_page_not_found() -> str:
+    return _share_page_shell(
+        "<h1>找不到這支影片</h1>"
+        "<p>連結可能已經過期(產出的檔案只保留 24 小時)，或網址不正確，請確認後再試一次。</p>"
     )
 
 
