@@ -95,6 +95,18 @@ def test_curly_double_quoted_phrase_never_split_across_chunks():
     assert any(quote in c for c in chunks), f"quoted phrase should stay intact: {quote!r}"
 
 
+def test_closing_quote_mark_ends_the_cue_even_without_trailing_punctuation():
+    # no comma/period sits between the closing quote and the next clause, so
+    # previously there was no break candidate there at all: the algorithm
+    # fell through to a raw character-count cut that landed a couple of
+    # characters past the quote, gluing part of the next clause onto the
+    # same over-long cue (this is what rendered as a 2-line wrapped subtitle).
+    text = "很多人會覺得「職場霸凌離我很遠」但其實每個人都有可能遇到"
+    chunks = split_text_into_chunks(text, max_chars=18)
+    assert "".join(chunks) == text
+    assert chunks[0] == "很多人會覺得「職場霸凌離我很遠」"
+
+
 # ---------- orphan-merge: no tiny trailing fragments ----------
 
 

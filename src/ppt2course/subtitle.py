@@ -32,7 +32,11 @@ PROTECTED_PHRASES = [
     "薪資管理", "教育訓練", "公司制度", "工作要求",
 ]
 
-_TIER1_PATTERN = re.compile(r"(?<=[。！？!?])")
+# A closing quote mark ends the cue there even with no sentence/clause
+# punctuation right after it — otherwise the splitter had no break candidate
+# between the quote and the next clause and glued them into one over-long
+# cue (visually this rendered as a wrapped 2-line subtitle).
+_TIER1_PATTERN = re.compile(r"(?<=[。！？!?」』”’])")
 _TIER2_PATTERN = re.compile(r"(?<=[，、;:])")
 _TIER3_PATTERN = re.compile(r"(?<=[，。])")
 
@@ -103,7 +107,7 @@ def _shift_off_protected_phrase(text: str, pos: int) -> int:
             start = idx + 1
     for start, end in _quote_spans(text):
         if start < pos < end:
-            return start if start > 0 else end
+            return end
     return pos
 
 
