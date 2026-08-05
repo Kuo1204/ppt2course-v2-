@@ -36,6 +36,18 @@ _TIER1_PATTERN = re.compile(r"(?<=[。！？!?])")
 _TIER2_PATTERN = re.compile(r"(?<=[，、;:])")
 _TIER3_PATTERN = re.compile(r"(?<=[，。])")
 
+# A quoted phrase's opening/closing marks must land in the same cue — a break
+# chosen strictly between them silently split a quote onto its own line.
+# Covers Chinese corner brackets, curly quotes (common after pasting from
+# Word), and straight double quotes.
+_QUOTE_PAIR_PATTERN = re.compile(
+    r"「[^」]*」|『[^』]*』|“[^”]*”|‘[^’]*’|\"[^\"]*\""
+)
+
+
+def _quote_spans(text: str) -> list[tuple[int, int]]:
+    return [(m.start(), m.end()) for m in _QUOTE_PAIR_PATTERN.finditer(text)]
+
 _TRAILING_PUNCT_PATTERN = re.compile(r"[，。,、；;:.!?]+$")
 _LEADING_PUNCT_PATTERN = re.compile(r"^[，。,、；;:.!?]+")
 
@@ -73,6 +85,9 @@ def _is_protected_break(text: str, pos: int) -> bool:
             if idx < pos < idx + len(phrase):
                 return True
             start = idx + 1
+    for start, end in _quote_spans(text):
+        if start < pos < end:
+            return True
     return False
 
 
@@ -86,6 +101,9 @@ def _shift_off_protected_phrase(text: str, pos: int) -> int:
             if idx < pos < idx + len(phrase):
                 return idx if idx > 0 else idx + len(phrase)
             start = idx + 1
+    for start, end in _quote_spans(text):
+        if start < pos < end:
+            return start if start > 0 else end
     return pos
 
 
@@ -128,12 +146,15 @@ def split_text_into_chunks(text: str, max_chars: int = CUE_TARGET_MAX_CHARS) -> 
                 break
 
         if best is None:
+            # Past the ideal budget already — take whichever break (any tier)
+            # is nearest rather than insisting on tier priority, so a distant
+            # sentence-end doesn't get chosen over a much closer comma.
             search_limit = start + max_chars * 2
-            for positions in (tier1, tier2, tier3):
-                ahead = [p for p in positions if start < p <= search_limit]
-                if ahead:
-                    best = min(ahead)
-                    break
+            ahead = [
+                p for p in (*tier1, *tier2, *tier3) if start < p <= search_limit
+            ]
+            if ahead:
+                best = min(ahead)
 
         if best is None:
             best = _shift_off_protected_phrase(text, window_end)

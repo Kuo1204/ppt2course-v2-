@@ -43,6 +43,19 @@ def test_split_respects_target_length_when_no_punctuation_nearby():
     assert all(len(c) <= 18 * 2 for c in chunks)
 
 
+def test_extended_fallback_prefers_nearer_lower_tier_break_over_farther_tier1():
+    # comma split position 11 (nearer) and the only period's split position
+    # 18 (farther) are both outside the max_chars=10 window but inside the
+    # 2x extended search. Strictly trying tier1 before tier2 in the extended
+    # search picks the farther period and produces a needlessly long first
+    # chunk; picking whichever break is nearest, tier order aside, is the
+    # "smarter" choice.
+    text = "各位同仁大家好呀好呀，歡迎光臨這裡。謝謝"
+    chunks = split_text_into_chunks(text, max_chars=10)
+    assert "".join(chunks) == text
+    assert chunks[0] == "各位同仁大家好呀好呀，"
+
+
 # ---------- protected phrases: never split down the middle ----------
 
 
@@ -61,6 +74,25 @@ def test_protected_phrase_avoided_even_with_no_punctuation_nearby():
     for i in range(len(chunks) - 1):
         assert not chunks[i].endswith("帳戶"), f"'帳戶核對' split apart: {chunks[i]!r}"
         assert not chunks[i + 1].startswith("核對"), f"'帳戶核對' split apart: {chunks[i + 1]!r}"
+
+
+# ---------- quotation marks: never split a quoted phrase across chunks ----------
+
+
+def test_quoted_phrase_never_split_across_chunks():
+    text = "主管在會議上特別強調「這件事情大家都要遵守規定」，請大家務必配合辦理"
+    chunks = split_text_into_chunks(text, max_chars=12)
+    assert "".join(chunks) == text
+    quote = "「這件事情大家都要遵守規定」"
+    assert any(quote in c for c in chunks), f"quoted phrase should stay intact: {quote!r}"
+
+
+def test_curly_double_quoted_phrase_never_split_across_chunks():
+    text = "老師在課堂上說“每個人都要對自己負責”，這句話讓大家印象深刻"
+    chunks = split_text_into_chunks(text, max_chars=12)
+    assert "".join(chunks) == text
+    quote = "“每個人都要對自己負責”"
+    assert any(quote in c for c in chunks), f"quoted phrase should stay intact: {quote!r}"
 
 
 # ---------- orphan-merge: no tiny trailing fragments ----------
