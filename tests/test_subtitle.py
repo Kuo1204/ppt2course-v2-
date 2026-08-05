@@ -107,6 +107,20 @@ def test_closing_quote_mark_ends_the_cue_even_without_trailing_punctuation():
     assert chunks[0] == "很多人會覺得「職場霸凌離我很遠」"
 
 
+def test_runaway_quote_span_is_hard_cut_instead_of_overflowing_a_cue():
+    # A single quoted phrase with no internal punctuation and far more than
+    # 2x max_chars of content (or a mismatched quote mark elsewhere in the
+    # narration pairing with a much later closing mark than intended) used
+    # to be honored in full: quote-protection never split it, so it came
+    # out as one giant cue. With WrapStyle=2 forcing single-line rendering,
+    # that overflowed off both edges of the video frame instead of wrapping.
+    # A hard cut (even mid-quote) is the lesser break here.
+    text = "「無標點的超長句子" + "無標點的超長句子" * 5 + "」"
+    chunks = split_text_into_chunks(text, max_chars=18)
+    assert "".join(chunks) == text
+    assert all(len(c) <= 36 for c in chunks), [len(c) for c in chunks]
+
+
 # ---------- orphan-merge: no tiny trailing fragments ----------
 
 

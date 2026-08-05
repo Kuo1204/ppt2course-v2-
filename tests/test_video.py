@@ -183,6 +183,16 @@ def test_build_ffmpeg_command_two_slides_structure():
     # or large font sizes, defeating the "always one line" cue design.
     assert "WrapStyle=2" in filter_complex
 
+    # Plain SRT has no PlayResX/PlayResY, so libass falls back to a 384x288
+    # script canvas and scales FontSize up to fill the real frame (~5x at
+    # 1920x1080) unless told the actual output resolution — inflating
+    # rendered subtitles well past what font_size configured and overflowing
+    # long cues off both edges of the frame. PlayResX/PlayResY overrides via
+    # force_style are what actually fixes this (original_size measurably
+    # does not, verified against a real ffmpeg render).
+    assert "PlayResX=1920" in filter_complex
+    assert "PlayResY=1080" in filter_complex
+
     # Without an explicit codec/pixel format, ffmpeg picks whatever the filter
     # graph naturally produces (often yuv444p after xfade/subtitles), which
     # many standard players — including Windows' built-in ones — can't decode.
@@ -190,6 +200,25 @@ def test_build_ffmpeg_command_two_slides_structure():
     assert cmd[cmd.index("-pix_fmt") + 1] == "yuv420p"
     assert cmd[cmd.index("-c:a") + 1] == "aac"
     assert "+faststart" in cmd[cmd.index("-movflags") + 1]
+
+
+def test_build_ffmpeg_command_playres_tracks_resolution():
+    slide = _slide([TimedChunk("你好", 0, 800)])
+    cmd = _build_ffmpeg_command(
+        [slide],
+        durations_ms=[2000],
+        offsets_ms=[0],
+        srt_path="out.srt",
+        out_video_path="out.mp4",
+        transition="fade",
+        transition_duration_ms=500,
+        resolution=(1280, 720),
+        fps=30,
+        font_size=22,
+    )
+    filter_complex = cmd[cmd.index("-filter_complex") + 1]
+    assert "PlayResX=1280" in filter_complex
+    assert "PlayResY=720" in filter_complex
 
 
 # ---- compose_video (mocked subprocess) ----

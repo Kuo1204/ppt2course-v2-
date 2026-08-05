@@ -161,9 +161,20 @@ def split_text_into_chunks(text: str, max_chars: int = CUE_TARGET_MAX_CHARS) -> 
                 best = min(ahead)
 
         if best is None:
-            best = _shift_off_protected_phrase(text, window_end)
-            if best <= start:
+            shifted = _shift_off_protected_phrase(text, window_end)
+            # A quote/phrase normally only pushes a cue a little past
+            # max_chars. But an unclosed or mismatched quote mark earlier in
+            # the slide's narration can make _quote_spans pair it with a
+            # much later closing mark than the writer intended, stretching
+            # this "protected" span far past search_limit. Rather than honor
+            # that runaway span and emit a single cue long enough to
+            # overflow the video frame (WrapStyle=2 never wraps it), fall
+            # back to a hard cut at window_end — occasionally splitting a
+            # mis-paired quote is far less broken than an off-screen cue.
+            if shifted <= start or shifted > search_limit:
                 best = window_end
+            else:
+                best = shifted
 
         chunks.append(text[start:best])
         start = best

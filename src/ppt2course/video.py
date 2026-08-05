@@ -153,12 +153,30 @@ def _audio_acrossfade_chain(n: int, transition_duration_ms: int) -> tuple[str, s
     return ";".join(parts), prev_label
 
 
-def _subtitle_filter(srt_path: str, video_label: str, font_size: int) -> tuple[str, str]:
+def _subtitle_filter(
+    srt_path: str, video_label: str, font_size: int, resolution: tuple[int, int]
+) -> tuple[str, str]:
+    width, height = resolution
     escaped_path = _escape_ffmpeg_filter_path(srt_path)
+    # Plain SRT carries no PlayResX/PlayResY of its own, so ffmpeg's
+    # SRT->ASS conversion always stamps a fixed 384x288 default script
+    # canvas (confirmed by dumping the intermediate .ass — this does not
+    # depend on the target resolution at all). libass then scales that
+    # 384x288 canvas up to the real output frame (~5x at 1920x1080),
+    # inflating FontSize right along with it: a cue sized against max_chars
+    # at the nominal font size renders several times wider than intended
+    # and overflows off both edges of the frame. The `original_size` filter
+    # option, despite being documented for exactly this, measurably has no
+    # effect here (verified with a real ffmpeg render) — the fix that does
+    # work is overriding PlayResX/PlayResY directly via force_style, which
+    # libass's force-style parser honors as script-level (not just
+    # per-style) overrides, making FontSize a literal pixel size matching
+    # the actual output resolution.
     style = (
         f"FontName={SUBTITLE_FONT_NAME},FontSize={font_size},"
         f"PrimaryColour=&HFFFFFF&,OutlineColour=&H000000&,"
-        f"BorderStyle=1,Outline=2,Shadow=0,MarginV={SUBTITLE_MARGIN_V},WrapStyle=2"
+        f"BorderStyle=1,Outline=2,Shadow=0,MarginV={SUBTITLE_MARGIN_V},"
+        f"WrapStyle=2,PlayResX={width},PlayResY={height}"
     )
     filt = f"[{video_label}]subtitles='{escaped_path}':force_style='{style}'[vsub]"
     return filt, "vsub"
@@ -189,7 +207,7 @@ def _build_ffmpeg_command(
     audio_label_filters = [_audio_label_filter(n + i, i) for i in range(n)]
     xfade_filter, video_label = _video_xfade_chain(n, transition, transition_duration_ms, offsets_ms)
     audio_filter, audio_label = _audio_acrossfade_chain(n, transition_duration_ms)
-    sub_filter, final_video_label = _subtitle_filter(srt_path, video_label, font_size)
+    sub_filter, final_video_label = _subtitle_filter(srt_path, video_label, font_size, resolution)
 
     filter_parts = scale_filters + audio_label_filters
     if xfade_filter:
