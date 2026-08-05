@@ -6,6 +6,7 @@ import shutil
 import subprocess
 
 import pytest
+from PIL import Image
 
 from ppt2course.audio_duration import get_audio_duration_ms
 from ppt2course.tts import synthesize
@@ -183,3 +184,49 @@ def test_compose_video_with_logo_bgm_intro_outro_real_ffmpeg(tmp_path):
     expected_total_s = 1.0 + main_duration_s + 1.0  # intro(1s) + main + outro(1s)
     actual_total_s = get_audio_duration_ms(out_video) / 1000
     assert abs(actual_total_s - expected_total_s) < 0.6
+
+
+def test_logo_opacity_actually_changes_the_composited_pixel_real_ffmpeg(tmp_path):
+    # Renders a red logo over a green background at two opacities and reads
+    # the real rendered pixel back out, so this fails if colorchannelmixer
+    # were ever silently dropped/ignored rather than just asserting the
+    # ffmpeg command string looks right.
+    voice = "zh-TW-HsiaoChenNeural"
+
+    img1 = str(tmp_path / "slide1.png")
+    _make_color_image(img1, "green")
+    audio1 = str(tmp_path / "slide1.mp3")
+    chunks1 = synthesize("你好。", voice, audio1)
+    slides = [SlideVideoInput(image_path=img1, audio_path=audio1, chunks=chunks1)]
+
+    logo_path = str(tmp_path / "logo.png")
+    subprocess.run(
+        ["ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=red:s=200x200", "-frames:v", "1", logo_path],
+        check=True, capture_output=True,
+    )
+
+    resolution = (640, 480)
+
+    def _render_and_sample_top_right(opacity: float, name: str) -> tuple[int, int, int]:
+        out_video = str(tmp_path / f"out_{name}.mp4")
+        out_srt = str(tmp_path / f"out_{name}.srt")
+        compose_video(
+            slides, out_video, out_srt,
+            resolution=resolution, fps=24,
+            logo_path=logo_path, logo_width=200, logo_margin=20, logo_opacity=opacity,
+        )
+        frame_path = str(tmp_path / f"frame_{name}.png")
+        subprocess.run(
+            ["ffmpeg", "-y", "-ss", "0.1", "-i", out_video, "-frames:v", "1", frame_path],
+            check=True, capture_output=True,
+        )
+        # well inside the 200x200 logo painted at the top-right (margin=20)
+        return Image.open(frame_path).convert("RGB").getpixel((580, 60))
+
+    opaque_pixel = _render_and_sample_top_right(1.0, "opaque")
+    half_pixel = _render_and_sample_top_right(0.5, "half")
+
+    assert opaque_pixel[0] > 200 and opaque_pixel[1] < 60  # near-pure red logo
+    # at half opacity the green background must show through, meaningfully
+    # raising the green channel versus the fully-opaque render
+    assert half_pixel[1] > opaque_pixel[1] + 40

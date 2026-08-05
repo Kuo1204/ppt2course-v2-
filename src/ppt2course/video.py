@@ -23,6 +23,7 @@ DEFAULT_FPS = 30
 DEFAULT_FONT_SIZE = 22
 DEFAULT_LOGO_WIDTH = 160
 DEFAULT_LOGO_MARGIN = 24
+DEFAULT_LOGO_OPACITY = 1.0
 DEFAULT_BGM_VOLUME = 0.2
 
 # Ported from the user's earlier prototype: white text with a black outline
@@ -233,14 +234,20 @@ def _run_ffmpeg(cmd: list[str], step_description: str) -> None:
 
 
 def _add_logo_overlay(
-    video_path: str, logo_path: str, out_path: str, logo_width: int, margin: int
+    video_path: str,
+    logo_path: str,
+    out_path: str,
+    logo_width: int,
+    margin: int,
+    opacity: float = DEFAULT_LOGO_OPACITY,
 ) -> None:
     cmd = [
         "ffmpeg", "-y",
         "-i", video_path,
         "-i", logo_path,
         "-filter_complex",
-        f"[1:v]scale={logo_width}:-1[logo];[0:v][logo]overlay=W-w-{margin}:{margin}",
+        f"[1:v]scale={logo_width}:-1,format=rgba,colorchannelmixer=aa={opacity}[logo];"
+        f"[0:v][logo]overlay=W-w-{margin}:{margin}",
         "-c:a", "copy",
         "-pix_fmt", "yuv420p",
         out_path,
@@ -320,6 +327,7 @@ def compose_video(
     logo_path: str | None = None,
     logo_width: int = DEFAULT_LOGO_WIDTH,
     logo_margin: int = DEFAULT_LOGO_MARGIN,
+    logo_opacity: float = DEFAULT_LOGO_OPACITY,
     bgm_path: str | None = None,
     bgm_volume: float = DEFAULT_BGM_VOLUME,
     intro_path: str | None = None,
@@ -362,7 +370,7 @@ def compose_video(
 
         if logo_path:
             next_path = f"{temp_dir}/02_logo.mp4"
-            _add_logo_overlay(current, logo_path, next_path, logo_width, logo_margin)
+            _add_logo_overlay(current, logo_path, next_path, logo_width, logo_margin, opacity=logo_opacity)
             current = next_path
 
         if bgm_path:

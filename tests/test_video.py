@@ -270,9 +270,18 @@ def test_add_logo_overlay_command_construction():
     assert "video.mp4" in cmd
     assert "logo.png" in cmd
     filter_arg = cmd[cmd.index("-filter_complex") + 1]
-    assert "scale=160:-1[logo]" in filter_arg
+    assert "scale=160:-1" in filter_arg
+    assert "colorchannelmixer=aa=1.0[logo]" in filter_arg  # default opacity: fully opaque
     assert "overlay=W-w-24:24" in filter_arg
     assert cmd[-1] == "out.mp4"
+
+
+def test_add_logo_overlay_applies_custom_opacity():
+    with patch("ppt2course.video.subprocess.run", return_value=_fake_run_ok()) as mock_run:
+        _add_logo_overlay("video.mp4", "logo.png", "out.mp4", logo_width=160, margin=24, opacity=0.4)
+
+    filter_arg = mock_run.call_args[0][0][mock_run.call_args[0][0].index("-filter_complex") + 1]
+    assert "colorchannelmixer=aa=0.4[logo]" in filter_arg
 
 
 def test_add_logo_overlay_raises_on_nonzero_exit():
@@ -369,6 +378,28 @@ def test_compose_video_chains_logo_bgm_intro_outro_when_all_provided(tmp_path):
 
     # core build + logo + bgm + intro/outro concat = 4 ffmpeg invocations
     assert mock_run.call_count == 4
+
+
+def test_compose_video_forwards_logo_opacity_to_overlay_filter(tmp_path):
+    slide1 = _slide([TimedChunk("你好", 0, 800), TimedChunk("。", 800, 800)])
+
+    with patch("ppt2course.video.shutil.which", return_value="/usr/bin/ffmpeg"):
+        with patch("ppt2course.video.get_audio_duration_ms", return_value=1000):
+            with patch("ppt2course.video.shutil.copy"):
+                with patch(
+                    "ppt2course.video.subprocess.run", return_value=_fake_run_ok()
+                ) as mock_run:
+                    compose_video(
+                        [slide1],
+                        str(tmp_path / "out.mp4"),
+                        str(tmp_path / "out.srt"),
+                        logo_path="logo.png",
+                        logo_opacity=0.5,
+                    )
+
+    logo_call = next(c for c in mock_run.call_args_list if "logo.png" in c[0][0])
+    filter_arg = logo_call[0][0][logo_call[0][0].index("-filter_complex") + 1]
+    assert "colorchannelmixer=aa=0.5[logo]" in filter_arg
 
 
 def test_compose_video_no_optional_extras_only_calls_ffmpeg_once(tmp_path):

@@ -193,12 +193,13 @@ def test_happy_path_returns_export_outputs_result(tmp_path):
                                 "deck.pptx", ["img1.png", "img2.png"],
                                 str(tmp_path / "work"), str(tmp_path / "out"), "課程",
                                 ScriptMode.NOTES, "zh-TW-HsiaoChenNeural",
-                                logo_path="logo.png", bgm_path="bgm.mp3",
+                                logo_path="logo.png", logo_opacity=0.6, bgm_path="bgm.mp3",
                             )
 
     assert result == expected
     mock_compose.assert_called_once()
     assert mock_compose.call_args.kwargs["logo_path"] == "logo.png"
+    assert mock_compose.call_args.kwargs["logo_opacity"] == 0.6
     assert mock_compose.call_args.kwargs["bgm_path"] == "bgm.mp3"
     mock_export.assert_called_once()
     assert mock_export.call_args[0][2] == ["講稿一", "講稿二"]
