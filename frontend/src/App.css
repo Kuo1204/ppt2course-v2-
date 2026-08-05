@@ -447,40 +447,141 @@ input[type="range"] {
   }
 }
 
-.pptx-preview-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-  gap: 10px;
-  margin-top: 12px;
+.pptx-preview-strip {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+  overflow-x: auto;
+  padding-bottom: 4px;
 }
 
+/* Same footprint as .thumb (the per-slide image field's strip) — this is
+   just a glanceable confirmation, not a reading surface. Click to blow one
+   up full-size via the lightbox instead of enlarging the strip itself. */
 .pptx-preview-thumb {
   position: relative;
-  border: 1px solid var(--border);
+  flex-shrink: 0;
+  width: 72px;
+  height: 48px;
+  padding: 0;
   border-radius: 3px;
+  border: 1px solid var(--border);
   overflow: hidden;
-  background: var(--surface-raised);
-  aspect-ratio: 4 / 3;
+  background: #fff;
+  cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+
+.pptx-preview-thumb:hover,
+.pptx-preview-thumb:focus-visible {
+  border-color: var(--accent);
 }
 
 .pptx-preview-thumb img {
   width: 100%;
   height: 100%;
   object-fit: contain;
-  background: #fff;
+  pointer-events: none;
 }
 
 .pptx-preview-thumb-badge {
   position: absolute;
-  bottom: 4px;
-  right: 4px;
-  padding: 1px 6px;
+  bottom: 2px;
+  right: 2px;
+  padding: 0 5px;
   border-radius: 2px;
   background: rgba(0, 0, 0, 0.65);
   color: #fff;
   font-family: var(--mono);
   font-size: 10px;
-  line-height: 1.6;
+  line-height: 1.5;
+}
+
+.pptx-lightbox-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+  z-index: 60;
+}
+
+.pptx-lightbox {
+  position: relative;
+  max-width: min(90vw, 1100px);
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.pptx-lightbox-stage {
+  position: relative;
+  display: flex;
+}
+
+.pptx-lightbox img {
+  max-width: 100%;
+  max-height: calc(85vh - 40px);
+  border-radius: 4px;
+  background: #fff;
+  box-shadow: var(--shadow);
+}
+
+.pptx-lightbox-caption {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: #fff;
+  opacity: 0.85;
+}
+
+.pptx-lightbox-close {
+  position: absolute;
+  top: -14px;
+  right: -14px;
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+
+.pptx-lightbox-nav {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  font-size: 16px;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+}
+
+.pptx-lightbox-nav:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
+}
+
+.pptx-lightbox-nav-prev {
+  left: 10px;
+}
+
+.pptx-lightbox-nav-next {
+  right: 10px;
 }
 
 /* ---------- mode picker ---------- */

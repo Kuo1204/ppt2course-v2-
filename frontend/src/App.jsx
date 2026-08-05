@@ -584,6 +584,7 @@ function UploadStep({
   baseName,
   setBaseName,
 }) {
+  const [lightboxIndex, setLightboxIndex] = useState(null);
   const slideCountTrailing = imageFiles.length
     ? `${imageFiles.length} 頁投影片`
     : pptxPreviewThumbnails.length
@@ -624,14 +625,29 @@ function UploadStep({
           )}
 
           {pptxPreviewStatus === "done" && pptxPreviewThumbnails.length > 0 && (
-            <div className="pptx-preview-grid">
+            <div className="pptx-preview-strip">
               {pptxPreviewThumbnails.map((url, i) => (
-                <div key={i} className="pptx-preview-thumb">
+                <button
+                  key={i}
+                  type="button"
+                  className="pptx-preview-thumb"
+                  onClick={() => setLightboxIndex(i)}
+                  aria-label={`放大檢視第 ${i + 1} 頁投影片`}
+                >
                   <img src={url} alt={`第 ${i + 1} 頁投影片預覽`} />
                   <span className="pptx-preview-thumb-badge">{i + 1}</span>
-                </div>
+                </button>
               ))}
             </div>
+          )}
+
+          {lightboxIndex !== null && (
+            <PptxSlideLightbox
+              thumbnails={pptxPreviewThumbnails}
+              index={lightboxIndex}
+              onClose={() => setLightboxIndex(null)}
+              onNavigate={setLightboxIndex}
+            />
           )}
         </div>
 
@@ -672,6 +688,58 @@ function UploadStep({
         </div>
       </div>
     </>
+  );
+}
+
+function PptxSlideLightbox({ thumbnails, index, onClose, onNavigate }) {
+  useEffect(() => {
+    function handleKeyDown(e) {
+      if (e.key === "Escape") onClose();
+      else if (e.key === "ArrowLeft") onNavigate((i) => Math.max(i - 1, 0));
+      else if (e.key === "ArrowRight") onNavigate((i) => Math.min(i + 1, thumbnails.length - 1));
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose, onNavigate, thumbnails.length]);
+
+  return (
+    <div className="pptx-lightbox-backdrop" onClick={onClose}>
+      <div
+        className="pptx-lightbox"
+        role="dialog"
+        aria-modal="true"
+        aria-label={`第 ${index + 1} 頁投影片放大檢視`}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="pptx-lightbox-stage">
+          <button type="button" className="pptx-lightbox-close" onClick={onClose} aria-label="關閉">
+            ✕
+          </button>
+          <button
+            type="button"
+            className="pptx-lightbox-nav pptx-lightbox-nav-prev"
+            onClick={() => onNavigate((i) => Math.max(i - 1, 0))}
+            disabled={index === 0}
+            aria-label="上一頁"
+          >
+            ‹
+          </button>
+          <img src={thumbnails[index]} alt={`第 ${index + 1} 頁投影片`} />
+          <button
+            type="button"
+            className="pptx-lightbox-nav pptx-lightbox-nav-next"
+            onClick={() => onNavigate((i) => Math.min(i + 1, thumbnails.length - 1))}
+            disabled={index === thumbnails.length - 1}
+            aria-label="下一頁"
+          >
+            ›
+          </button>
+        </div>
+        <span className="pptx-lightbox-caption">
+          第 {index + 1} / {thumbnails.length} 頁
+        </span>
+      </div>
+    </div>
   );
 }
 
