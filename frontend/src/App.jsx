@@ -169,10 +169,36 @@ function App() {
   }, [jobId]);
 
   function resetJob() {
+    // Full reset, not just clearing the finished job — "建立新任務" should
+    // mean an actually blank form, not the previous task's files/settings
+    // still sitting there waiting to be manually swapped out.
     setJobId(null);
     setJobStatus(null);
     setFormError(null);
     setCurrentStep(1);
+
+    setPptxFile(null);
+    setImageFiles([]);
+    setBaseName("課程");
+    setScriptMode("NOTES");
+    setTextInputMode("perSlide");
+    setPerSlideTexts([]);
+    setPasteText("");
+    setPasteError(null);
+    setGeminiApiKey("");
+    setVoice(VOICES[0].value);
+    setVoiceRate(0);
+    setVoiceVolume(0);
+    setTransition("fade");
+    setTransitionDurationMs(500);
+    setResolution(RESOLUTIONS[0].value);
+    setFontSize(FONT_SIZES[1].value);
+    setLogoFile(null);
+    setLogoOpacity(LOGO_OPACITY_DEFAULT);
+    setBgmFile(null);
+    setIntroFile(null);
+    setOutroFile(null);
+    setSubmitting(false);
   }
 
   function validateStep(step) {
@@ -848,7 +874,13 @@ function FileField({ label, file, onChange, accept }) {
 
 function LogoField({ file, onChange, opacity, setOpacity }) {
   const [resetKey, setResetKey] = useState(0);
-  const previewUrls = useObjectUrls(file ? [file] : []);
+  // `file ? [file] : []` is a fresh array on every render regardless of
+  // whether `file` itself changed, so useObjectUrls' effect (keyed on that
+  // array's identity) would re-run every render and set new state every
+  // time — an infinite render loop. Memoizing on `file` keeps the array
+  // reference stable across renders where the file hasn't actually changed.
+  const previewFiles = useMemo(() => (file ? [file] : []), [file]);
+  const previewUrls = useObjectUrls(previewFiles);
   const previewUrl = previewUrls[0];
 
   function handleRemove() {
