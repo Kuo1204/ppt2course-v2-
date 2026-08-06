@@ -65,6 +65,16 @@ const LOGO_OPACITY_MIN = 10;
 const LOGO_OPACITY_MAX = 100;
 const LOGO_OPACITY_DEFAULT = 100;
 
+// Expressed as % of frame height (distance from the bottom edge) rather
+// than a raw pixel count, so the same slider position looks the same
+// whether the job renders at 720p or 4K — the backend still ultimately
+// takes a pixel MarginV, computed from this percent against whatever
+// resolution is selected at submit time. 3% reproduces the previous
+// hardcoded 30px-at-1080p look for anyone who never touches the slider.
+const SUBTITLE_POSITION_MIN = 2;
+const SUBTITLE_POSITION_MAX = 30;
+const SUBTITLE_POSITION_DEFAULT = 3;
+
 const GEMINI_API_KEY_URL = "https://aistudio.google.com/app/apikey";
 const POLL_INTERVAL_MS = 2000;
 
@@ -120,6 +130,7 @@ function App() {
   const [transitionDurationMs, setTransitionDurationMs] = useState(500);
   const [resolution, setResolution] = useState(RESOLUTIONS[0].value);
   const [fontSize, setFontSize] = useState(FONT_SIZES[1].value);
+  const [subtitlePositionPercent, setSubtitlePositionPercent] = useState(SUBTITLE_POSITION_DEFAULT);
   const [logoFile, setLogoFile] = useState(null);
   const [logoOpacity, setLogoOpacity] = useState(LOGO_OPACITY_DEFAULT);
   const [bgmFile, setBgmFile] = useState(null);
@@ -276,6 +287,7 @@ function App() {
     setTransitionDurationMs(500);
     setResolution(RESOLUTIONS[0].value);
     setFontSize(FONT_SIZES[1].value);
+    setSubtitlePositionPercent(SUBTITLE_POSITION_DEFAULT);
     setLogoFile(null);
     setLogoOpacity(LOGO_OPACITY_DEFAULT);
     setBgmFile(null);
@@ -375,6 +387,10 @@ function App() {
     form.append("resolution_width", width);
     form.append("resolution_height", height);
     form.append("font_size", String(fontSize));
+    form.append(
+      "subtitle_margin_v",
+      String(Math.round((Number(height) * subtitlePositionPercent) / 100))
+    );
     if (logoFile) {
       form.append("logo", logoFile);
       form.append("logo_opacity", String(logoOpacity / 100));
@@ -502,6 +518,9 @@ function App() {
                 setResolution={setResolution}
                 fontSize={fontSize}
                 setFontSize={setFontSize}
+                subtitlePositionPercent={subtitlePositionPercent}
+                setSubtitlePositionPercent={setSubtitlePositionPercent}
+                previewImageUrl={thumbUrls[0]}
                 logoFile={logoFile}
                 setLogoFile={setLogoFile}
                 logoOpacity={logoOpacity}
@@ -527,6 +546,7 @@ function App() {
                 transitionDurationMs={transitionDurationMs}
                 resolutionLabel={resolutionLabel}
                 fontSizeLabel={fontSizeLabel}
+                subtitlePositionPercent={subtitlePositionPercent}
                 extras={[
                   logoFile && `Logo（透明度 ${logoOpacity}%）`,
                   bgmFile && "背景音樂",
@@ -1077,6 +1097,9 @@ function ExtrasStep({
   setResolution,
   fontSize,
   setFontSize,
+  subtitlePositionPercent,
+  setSubtitlePositionPercent,
+  previewImageUrl,
   logoFile,
   setLogoFile,
   logoOpacity,
@@ -1122,6 +1145,12 @@ function ExtrasStep({
           </select>
         </div>
 
+        <SubtitlePositionField
+          percent={subtitlePositionPercent}
+          setPercent={setSubtitlePositionPercent}
+          previewImageUrl={previewImageUrl}
+        />
+
         <LogoField
           file={logoFile}
           onChange={setLogoFile}
@@ -1133,6 +1162,39 @@ function ExtrasStep({
         <FileField label="片尾影片" file={outroFile} onChange={setOutroFile} accept="video/*" />
       </div>
     </>
+  );
+}
+
+function SubtitlePositionField({ percent, setPercent, previewImageUrl }) {
+  return (
+    <div className="field full">
+      <label htmlFor="subtitle-position-range">
+        字幕高度 <span className="hint">{percent}%（距離畫面底部）</span>
+      </label>
+      <input
+        id="subtitle-position-range"
+        type="range"
+        min={SUBTITLE_POSITION_MIN}
+        max={SUBTITLE_POSITION_MAX}
+        step={1}
+        value={percent}
+        onChange={(e) => setPercent(Number(e.target.value))}
+      />
+
+      <div
+        className="subtitle-position-preview"
+        style={previewImageUrl ? { backgroundImage: `url(${previewImageUrl})` } : undefined}
+      >
+        <span className="subtitle-position-preview-caption" style={{ bottom: `${percent}%` }}>
+          字幕預覽文字
+        </span>
+      </div>
+      {!previewImageUrl && (
+        <p className="hint" style={{ margin: "6px 0 0" }}>
+          先在 Step 01 上傳投影片圖片，這裡就會用實際畫面預覽字幕高度
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -1280,6 +1342,7 @@ function ReviewStep({
   transitionDurationMs,
   resolutionLabel,
   fontSizeLabel,
+  subtitlePositionPercent,
   extras,
 }) {
   const rows = useMemo(
@@ -1295,6 +1358,7 @@ function ReviewStep({
       ],
       ["解析度", resolutionLabel],
       ["字幕大小", fontSizeLabel],
+      ["字幕高度", `距離底部 ${subtitlePositionPercent}%`],
       ["額外項目", extras.length ? extras.join("、") : "無"],
     ],
     [
@@ -1308,6 +1372,7 @@ function ReviewStep({
       transitionDurationMs,
       resolutionLabel,
       fontSizeLabel,
+      subtitlePositionPercent,
       extras,
     ]
   );
@@ -1402,7 +1467,7 @@ function HelpWidget() {
               </li>
               <li>
                 <b>進階選項</b>
-                <span>Logo、背景音樂、片頭尾、字幕大小，全部選填，不設定也沒關係。</span>
+                <span>Logo、背景音樂、片頭尾、字幕大小與高度，全部選填，不設定也沒關係。</span>
               </li>
               <li>
                 <b>開始製作</b>

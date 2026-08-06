@@ -376,6 +376,37 @@ input[type="range"] {
   letter-spacing: 0.04em;
 }
 
+.subtitle-position-preview {
+  position: relative;
+  margin-top: 10px;
+  width: 100%;
+  max-width: 420px;
+  aspect-ratio: 16 / 9;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  overflow: hidden;
+  background:
+    linear-gradient(135deg, var(--surface-raised), var(--surface))
+    center / cover no-repeat;
+  background-size: cover;
+  background-position: center;
+}
+
+.subtitle-position-preview-caption {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  color: #fff;
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 13px;
+  text-shadow:
+    -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000,
+    0 0 6px rgba(0, 0, 0, 0.6);
+  transition: bottom 0.05s linear;
+}
+
 .field-with-action {
   display: flex;
   gap: 8px;

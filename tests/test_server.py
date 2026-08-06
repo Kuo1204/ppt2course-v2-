@@ -81,6 +81,25 @@ def test_create_job_forwards_voice_rate_and_volume(tmp_path):
     assert calls[0]["font_size"] == 60
 
 
+def test_create_job_forwards_subtitle_margin_v(tmp_path):
+    calls = []
+
+    def fake_pipeline(**kwargs):
+        calls.append(kwargs)
+        return {}
+
+    client, manager = _make_client(fake_pipeline, tmp_path)
+
+    client.post(
+        "/api/jobs",
+        data=_upload_form(subtitle_margin_v="220"),
+        files=_upload_files(),
+    )
+    manager.process_next()
+
+    assert calls[0]["subtitle_margin_v"] == 220
+
+
 def test_create_job_forwards_logo_opacity(tmp_path):
     calls = []
 

@@ -221,6 +221,45 @@ def test_build_ffmpeg_command_playres_tracks_resolution():
     assert "PlayResY=720" in filter_complex
 
 
+def test_build_ffmpeg_command_default_subtitle_margin_v_unchanged():
+    # Locks in the pre-existing look for anyone not touching the new control.
+    slide = _slide([TimedChunk("你好", 0, 800)])
+    cmd = _build_ffmpeg_command(
+        [slide],
+        durations_ms=[2000],
+        offsets_ms=[0],
+        srt_path="out.srt",
+        out_video_path="out.mp4",
+        transition="fade",
+        transition_duration_ms=500,
+        resolution=(1920, 1080),
+        fps=30,
+        font_size=22,
+    )
+    filter_complex = cmd[cmd.index("-filter_complex") + 1]
+    assert "MarginV=30" in filter_complex
+
+
+def test_build_ffmpeg_command_custom_subtitle_margin_v():
+    slide = _slide([TimedChunk("你好", 0, 800)])
+    cmd = _build_ffmpeg_command(
+        [slide],
+        durations_ms=[2000],
+        offsets_ms=[0],
+        srt_path="out.srt",
+        out_video_path="out.mp4",
+        transition="fade",
+        transition_duration_ms=500,
+        resolution=(1920, 1080),
+        fps=30,
+        font_size=22,
+        subtitle_margin_v=180,
+    )
+    filter_complex = cmd[cmd.index("-filter_complex") + 1]
+    assert "MarginV=180" in filter_complex
+    assert "MarginV=30" not in filter_complex
+
+
 # ---- compose_video (mocked subprocess) ----
 
 def test_compose_video_raises_on_empty_slides():
@@ -278,6 +317,30 @@ def test_compose_video_writes_srt_and_calls_ffmpeg(tmp_path):
     assert "你好" in srt_content
     assert "謝謝" in srt_content
     mock_run.assert_called_once()
+
+
+def test_compose_video_forwards_subtitle_margin_v_to_ffmpeg_command(tmp_path):
+    slide = _slide([TimedChunk("你好", 0, 800)])
+
+    class FakeResult:
+        returncode = 0
+        stderr = ""
+
+    with patch("ppt2course.video.shutil.which", return_value="/usr/bin/ffmpeg"):
+        with patch("ppt2course.video.get_audio_duration_ms", return_value=1000):
+            with patch(
+                "ppt2course.video.subprocess.run", return_value=FakeResult()
+            ) as mock_run:
+                compose_video(
+                    [slide],
+                    str(tmp_path / "out.mp4"),
+                    str(tmp_path / "out.srt"),
+                    subtitle_margin_v=250,
+                )
+
+    cmd = mock_run.call_args.args[0]
+    filter_complex = cmd[cmd.index("-filter_complex") + 1]
+    assert "MarginV=250" in filter_complex
 
 
 # ---- _add_logo_overlay / _mix_background_music / _concatenate_with_intro_outro ----

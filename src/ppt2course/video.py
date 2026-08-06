@@ -27,10 +27,12 @@ DEFAULT_LOGO_OPACITY = 1.0
 DEFAULT_BGM_VOLUME = 0.2
 
 # Ported from the user's earlier prototype: white text with a black outline
-# (no background box), fixed bottom margin regardless of resolution/font
-# size — matches their previously-configured look exactly.
+# (no background box). MarginV (distance from the bottom edge, in pixels —
+# literal pixels now that PlayResX/PlayResY are pinned to the real output
+# resolution, see _subtitle_filter) is user-adjustable per job; this is only
+# the fallback for anyone who doesn't touch that control.
 SUBTITLE_FONT_NAME = "Noto Sans CJK TC"
-SUBTITLE_MARGIN_V = 30
+DEFAULT_SUBTITLE_MARGIN_V = 30
 
 
 class VideoComposeError(Exception):
@@ -154,7 +156,11 @@ def _audio_acrossfade_chain(n: int, transition_duration_ms: int) -> tuple[str, s
 
 
 def _subtitle_filter(
-    srt_path: str, video_label: str, font_size: int, resolution: tuple[int, int]
+    srt_path: str,
+    video_label: str,
+    font_size: int,
+    resolution: tuple[int, int],
+    margin_v: int = DEFAULT_SUBTITLE_MARGIN_V,
 ) -> tuple[str, str]:
     width, height = resolution
     escaped_path = _escape_ffmpeg_filter_path(srt_path)
@@ -175,7 +181,7 @@ def _subtitle_filter(
     style = (
         f"FontName={SUBTITLE_FONT_NAME},FontSize={font_size},"
         f"PrimaryColour=&HFFFFFF&,OutlineColour=&H000000&,"
-        f"BorderStyle=1,Outline=2,Shadow=0,MarginV={SUBTITLE_MARGIN_V},"
+        f"BorderStyle=1,Outline=2,Shadow=0,MarginV={margin_v},"
         f"WrapStyle=2,PlayResX={width},PlayResY={height}"
     )
     filt = f"[{video_label}]subtitles='{escaped_path}':force_style='{style}'[vsub]"
@@ -193,6 +199,7 @@ def _build_ffmpeg_command(
     resolution: tuple[int, int],
     fps: int,
     font_size: int,
+    subtitle_margin_v: int = DEFAULT_SUBTITLE_MARGIN_V,
 ) -> list[str]:
     width, height = resolution
     n = len(slides)
@@ -207,7 +214,9 @@ def _build_ffmpeg_command(
     audio_label_filters = [_audio_label_filter(n + i, i) for i in range(n)]
     xfade_filter, video_label = _video_xfade_chain(n, transition, transition_duration_ms, offsets_ms)
     audio_filter, audio_label = _audio_acrossfade_chain(n, transition_duration_ms)
-    sub_filter, final_video_label = _subtitle_filter(srt_path, video_label, font_size, resolution)
+    sub_filter, final_video_label = _subtitle_filter(
+        srt_path, video_label, font_size, resolution, margin_v=subtitle_margin_v
+    )
 
     filter_parts = scale_filters + audio_label_filters
     if xfade_filter:
@@ -342,6 +351,7 @@ def compose_video(
     resolution: tuple[int, int] = DEFAULT_RESOLUTION,
     fps: int = DEFAULT_FPS,
     font_size: int = DEFAULT_FONT_SIZE,
+    subtitle_margin_v: int = DEFAULT_SUBTITLE_MARGIN_V,
     logo_path: str | None = None,
     logo_width: int = DEFAULT_LOGO_WIDTH,
     logo_margin: int = DEFAULT_LOGO_MARGIN,
@@ -381,6 +391,7 @@ def compose_video(
             resolution,
             fps,
             font_size,
+            subtitle_margin_v=subtitle_margin_v,
         )
         _run_ffmpeg(cmd, "slide/transition/subtitle composition")
 

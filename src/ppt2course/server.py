@@ -41,6 +41,7 @@ from ppt2course.video import (
     DEFAULT_LOGO_OPACITY,
     DEFAULT_LOGO_WIDTH,
     DEFAULT_RESOLUTION,
+    DEFAULT_SUBTITLE_MARGIN_V,
     DEFAULT_TRANSITION,
     DEFAULT_TRANSITION_DURATION_MS,
 )
@@ -140,6 +141,7 @@ def create_app(
         resolution_height: int = Form(DEFAULT_RESOLUTION[1]),
         fps: int = Form(DEFAULT_FPS),
         font_size: int = Form(DEFAULT_FONT_SIZE),
+        subtitle_margin_v: int = Form(DEFAULT_SUBTITLE_MARGIN_V),
         logo_width: int = Form(DEFAULT_LOGO_WIDTH),
         logo_margin: int = Form(DEFAULT_LOGO_MARGIN),
         logo_opacity: float = Form(DEFAULT_LOGO_OPACITY),
@@ -198,6 +200,7 @@ def create_app(
             resolution=(resolution_width, resolution_height),
             fps=fps,
             font_size=font_size,
+            subtitle_margin_v=subtitle_margin_v,
             logo_path=logo_path,
             logo_width=logo_width,
             logo_margin=logo_margin,
