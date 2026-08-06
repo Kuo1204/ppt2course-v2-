@@ -1149,6 +1149,7 @@ function ExtrasStep({
           percent={subtitlePositionPercent}
           setPercent={setSubtitlePositionPercent}
           previewImageUrl={previewImageUrl}
+          fontSize={fontSize}
         />
 
         <LogoField
@@ -1165,7 +1166,21 @@ function ExtrasStep({
   );
 }
 
-function SubtitlePositionField({ percent, setPercent, previewImageUrl }) {
+function SubtitlePositionField({ percent, setPercent, previewImageUrl, fontSize }) {
+  // A literally-proportional preview (fontSize scaled by the real output
+  // resolution's width) was tried first, but a real 16-40px subtitle really
+  // is only a few pixels tall against a 1920px-wide frame — in this ~420px
+  // box that came out to 3-9px, indistinguishable between options and
+  // barely visible. This scale is tuned against the preview box's own
+  // width instead, purely so the four size options read as clearly
+  // different from each other — not a literal scale model of the real
+  // output. cqw ("1% of this box's own rendered width") keeps that
+  // relationship stable across viewport widths.
+  const PREVIEW_FONT_REFERENCE_WIDTH = 420; // matches .subtitle-position-preview's max-width
+  const PREVIEW_FONT_SCALE = 0.72;
+  const previewFontSizeCqw =
+    ((fontSize * PREVIEW_FONT_SCALE) / PREVIEW_FONT_REFERENCE_WIDTH) * 100;
+
   return (
     <div className="field full">
       <label htmlFor="subtitle-position-range">
@@ -1185,15 +1200,18 @@ function SubtitlePositionField({ percent, setPercent, previewImageUrl }) {
         className="subtitle-position-preview"
         style={previewImageUrl ? { backgroundImage: `url(${previewImageUrl})` } : undefined}
       >
-        <span className="subtitle-position-preview-caption" style={{ bottom: `${percent}%` }}>
+        <span
+          className="subtitle-position-preview-caption"
+          style={{ bottom: `${percent}%`, fontSize: `clamp(8px, ${previewFontSizeCqw}cqw, 72px)` }}
+        >
           字幕預覽文字
         </span>
       </div>
-      {!previewImageUrl && (
-        <p className="hint" style={{ margin: "6px 0 0" }}>
-          先在 Step 01 上傳投影片圖片，這裡就會用實際畫面預覽字幕高度
-        </p>
-      )}
+      <p className="hint" style={{ margin: "6px 0 0" }}>
+        {previewImageUrl
+          ? "字級、位置皆按實際畫面比例預覽"
+          : "先在 Step 01 上傳投影片圖片，這裡就會用實際畫面預覽字幕高度與字級"}
+      </p>
     </div>
   );
 }
