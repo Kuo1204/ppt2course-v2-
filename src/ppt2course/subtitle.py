@@ -79,58 +79,79 @@ def strip_cue_punctuation(text: str) -> str:
     return text
 
 
-def _is_protected_break(text: str, pos: int) -> bool:
+def split_into_sentences(text: str) -> list[str]:
+    """Splits at sentence-ending punctuation (。！？!?, plus a closing
+    quote/bracket immediately after one — reusing the cue splitter's tier-1
+    pattern), keeping each mark with the sentence it closes. Coarser than
+    the cue splitter on purpose: this doesn't need clause-level (，、)
+    breaks or quote-pairing protection, since it's used to decide where
+    edge-tts synthesizes separate audio segments for STEP3's natural
+    inter-sentence pause (see pipeline.py) — a quote spanning a sentence
+    boundary is still a perfectly fine place to take a breath."""
+    return [s for s in _TIER1_PATTERN.split(text or "") if s.strip()]
+
+
+def _phrase_spans(text: str) -> list[tuple[int, int]]:
+    spans = []
     for phrase in PROTECTED_PHRASES:
         start = 0
         while True:
             idx = text.find(phrase, start)
             if idx == -1:
                 break
-            if idx < pos < idx + len(phrase):
-                return True
+            spans.append((idx, idx + len(phrase)))
             start = idx + 1
-    for start, end in _quote_spans(text):
-        if start < pos < end:
-            return True
-    return False
+    return spans
 
 
-def _shift_off_protected_phrase(text: str, pos: int) -> int:
-    for phrase in PROTECTED_PHRASES:
-        start = 0
-        while True:
-            idx = text.find(phrase, start)
-            if idx == -1:
-                break
-            if idx < pos < idx + len(phrase):
-                return idx if idx > 0 else idx + len(phrase)
-            start = idx + 1
-    for start, end in _quote_spans(text):
+def _protected_spans(
+    text: str, extra_spans: tuple[tuple[int, int], ...] = ()
+) -> list[tuple[int, int]]:
+    """Every span a split position must not land strictly inside: the
+    hardcoded domain PROTECTED_PHRASES, quoted spans, and whatever
+    caller-supplied spans it was given — e.g. jieba word boundaries (see
+    ppt2course.wordseg), so a hard cut never lands mid-word either."""
+    return [*_phrase_spans(text), *_quote_spans(text), *extra_spans]
+
+
+def _is_protected_break(pos: int, spans: list[tuple[int, int]]) -> bool:
+    return any(start < pos < end for start, end in spans)
+
+
+def _shift_off_protected_phrase(pos: int, spans: list[tuple[int, int]]) -> int:
+    for start, end in spans:
         if start < pos < end:
-            return end
+            return start if start > 0 else end
     return pos
 
 
-def _safe_split_positions(text: str, pattern: re.Pattern) -> list[int]:
+def _safe_split_positions(
+    text: str, pattern: re.Pattern, spans: list[tuple[int, int]]
+) -> list[int]:
     positions = []
     cursor = 0
     for part in pattern.split(text):
         cursor += len(part)
-        if 0 < cursor < len(text) and not _is_protected_break(text, cursor):
+        if 0 < cursor < len(text) and not _is_protected_break(cursor, spans):
             positions.append(cursor)
     return positions
 
 
-def split_text_into_chunks(text: str, max_chars: int = CUE_TARGET_MAX_CHARS) -> list[str]:
+def split_text_into_chunks(
+    text: str,
+    max_chars: int = CUE_TARGET_MAX_CHARS,
+    protected_spans: tuple[tuple[int, int], ...] = (),
+) -> list[str]:
     text = (text or "").strip()
     if not text:
         return []
     if len(text) <= max_chars:
         return [text]
 
-    tier1 = _safe_split_positions(text, _TIER1_PATTERN)
-    tier2 = _safe_split_positions(text, _TIER2_PATTERN)
-    tier3 = _safe_split_positions(text, _TIER3_PATTERN)
+    spans = _protected_spans(text, protected_spans)
+    tier1 = _safe_split_positions(text, _TIER1_PATTERN, spans)
+    tier2 = _safe_split_positions(text, _TIER2_PATTERN, spans)
+    tier3 = _safe_split_positions(text, _TIER3_PATTERN, spans)
 
     chunks = []
     start = 0
@@ -161,7 +182,7 @@ def split_text_into_chunks(text: str, max_chars: int = CUE_TARGET_MAX_CHARS) -> 
                 best = min(ahead)
 
         if best is None:
-            shifted = _shift_off_protected_phrase(text, window_end)
+            shifted = _shift_off_protected_phrase(window_end, spans)
             # A quote/phrase normally only pushes a cue a little past
             # max_chars. But an unclosed or mismatched quote mark earlier in
             # the slide's narration can make _quote_spans pair it with a
@@ -215,6 +236,7 @@ def generate_cues(
     chunks: list[TimedChunk],
     start_offset_ms: int = 0,
     max_chars: int = CUE_TARGET_MAX_CHARS,
+    protected_spans: tuple[tuple[int, int], ...] = (),
 ) -> list[SubtitleCue]:
     if not chunks:
         return []
@@ -229,7 +251,9 @@ def generate_cues(
         char_positions.append((cursor, cursor + len(c.text)))
         cursor += len(c.text)
 
-    text_chunks = split_text_into_chunks(full_text, max_chars=max_chars)
+    text_chunks = split_text_into_chunks(
+        full_text, max_chars=max_chars, protected_spans=protected_spans
+    )
 
     cues = []
     cursor = 0

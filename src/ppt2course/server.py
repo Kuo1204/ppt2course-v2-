@@ -23,6 +23,7 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from ppt2course.jobs import JobManager, JobStatus
+from ppt2course.pipeline import DEFAULT_SENTENCE_PAUSE_MS
 from ppt2course.pptx_preview import DEFAULT_THUMBNAIL_WIDTH, PptxPreviewError, render_pptx_thumbnails
 from ppt2course.script_extract import ScriptExtractionError, extract_text_from_file
 from ppt2course.script_gen import (
@@ -39,11 +40,13 @@ from ppt2course.video import (
     DEFAULT_FPS,
     DEFAULT_LOGO_MARGIN,
     DEFAULT_LOGO_OPACITY,
+    DEFAULT_LOGO_POSITION,
     DEFAULT_LOGO_WIDTH,
     DEFAULT_RESOLUTION,
     DEFAULT_SUBTITLE_MARGIN_V,
     DEFAULT_TRANSITION,
     DEFAULT_TRANSITION_DURATION_MS,
+    LOGO_POSITIONS,
 )
 
 DEFAULT_DATA_ROOT = os.environ.get("PPT2COURSE_DATA_ROOT", "data/jobs")
@@ -145,7 +148,10 @@ def create_app(
         logo_width: int = Form(DEFAULT_LOGO_WIDTH),
         logo_margin: int = Form(DEFAULT_LOGO_MARGIN),
         logo_opacity: float = Form(DEFAULT_LOGO_OPACITY),
+        logo_position: str = Form(DEFAULT_LOGO_POSITION),
         bgm_volume: float = Form(DEFAULT_BGM_VOLUME),
+        custom_dict: str | None = Form(None),
+        sentence_pause_ms: int = Form(DEFAULT_SENTENCE_PAUSE_MS),
         logo: UploadFile | None = File(None),
         bgm: UploadFile | None = File(None),
         intro: UploadFile | None = File(None),
@@ -155,6 +161,11 @@ def create_app(
             mode = ScriptMode[script_mode]
         except KeyError:
             raise HTTPException(status_code=400, detail=f"invalid script_mode: {script_mode}")
+
+        if logo_position not in LOGO_POSITIONS:
+            raise HTTPException(
+                status_code=400, detail=f"invalid logo_position: {logo_position}"
+            )
 
         parsed_texts = json.loads(texts) if texts else None
 
@@ -179,6 +190,12 @@ def create_app(
         bgm_path = await _save_optional_upload(bgm, uploads_dir, "bgm")
         intro_path = await _save_optional_upload(intro, uploads_dir, "intro")
         outro_path = await _save_optional_upload(outro, uploads_dir, "outro")
+
+        custom_dict_path = None
+        if custom_dict and custom_dict.strip():
+            custom_dict_path = os.path.join(uploads_dir, "custom_dict.txt")
+            with open(custom_dict_path, "w", encoding="utf-8") as f:
+                f.write(custom_dict)
 
         manager: JobManager = app.state.job_manager
         manager.submit(
@@ -205,10 +222,13 @@ def create_app(
             logo_width=logo_width,
             logo_margin=logo_margin,
             logo_opacity=logo_opacity,
+            logo_position=logo_position,
             bgm_path=bgm_path,
             bgm_volume=bgm_volume,
             intro_path=intro_path,
             outro_path=outro_path,
+            custom_dict_path=custom_dict_path,
+            sentence_pause_ms=sentence_pause_ms,
         )
         return {"job_id": job_id}
 

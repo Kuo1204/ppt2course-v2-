@@ -15,6 +15,7 @@ from dataclasses import dataclass
 
 from ppt2course.audio_duration import get_audio_duration_ms
 from ppt2course.subtitle import MIN_GAP_MS, SubtitleCue, TimedChunk, cues_to_srt, generate_cues
+from ppt2course.wordseg import WordSegmenter, get_default_segmenter
 
 DEFAULT_TRANSITION = "fade"
 DEFAULT_TRANSITION_DURATION_MS = 500
@@ -31,7 +32,18 @@ DEFAULT_FONT_SIZE = 64
 DEFAULT_LOGO_WIDTH = 160
 DEFAULT_LOGO_MARGIN = 24
 DEFAULT_LOGO_OPACITY = 1.0
+DEFAULT_LOGO_POSITION = "top-right"
 DEFAULT_BGM_VOLUME = 0.2
+
+# ffmpeg overlay= x:y expressions per corner, in terms of the overlay
+# filter's own W/H (base video) and w/h (logo) variables.
+_LOGO_POSITION_OVERLAYS = {
+    "top-left": ("{margin}", "{margin}"),
+    "top-right": ("W-w-{margin}", "{margin}"),
+    "bottom-left": ("{margin}", "H-h-{margin}"),
+    "bottom-right": ("W-w-{margin}", "H-h-{margin}"),
+}
+LOGO_POSITIONS = tuple(_LOGO_POSITION_OVERLAYS)
 
 # Ported from the user's earlier prototype: white text with a black outline
 # (no background box). MarginV (distance from the bottom edge, in pixels —
@@ -77,11 +89,22 @@ def _delay_cues(cues: list[SubtitleCue], delay_ms: int) -> list[SubtitleCue]:
 
 
 def _build_cues(
-    slides: list[SlideVideoInput], durations_ms: list[int], transition_ms: int
+    slides: list[SlideVideoInput],
+    durations_ms: list[int],
+    transition_ms: int,
+    word_segmenter: WordSegmenter | None = None,
 ) -> list[SubtitleCue]:
     offsets = _compute_slide_offsets(durations_ms, transition_ms)
     per_slide_cues = [
-        generate_cues(slide.chunks, start_offset_ms=offset)
+        generate_cues(
+            slide.chunks,
+            start_offset_ms=offset,
+            protected_spans=tuple(
+                word_segmenter.word_spans("".join(c.text for c in slide.chunks))
+            )
+            if word_segmenter
+            else (),
+        )
         for slide, offset in zip(slides, offsets)
     ]
 
@@ -274,14 +297,24 @@ def _add_logo_overlay(
     logo_width: int,
     margin: int,
     opacity: float = DEFAULT_LOGO_OPACITY,
+    position: str = DEFAULT_LOGO_POSITION,
 ) -> None:
+    try:
+        x_expr, y_expr = _LOGO_POSITION_OVERLAYS[position]
+    except KeyError:
+        raise ValueError(
+            f"unknown logo_position {position!r}; expected one of "
+            f"{sorted(_LOGO_POSITION_OVERLAYS)}"
+        ) from None
+    overlay_xy = f"{x_expr}:{y_expr}".format(margin=margin)
+
     cmd = [
         "ffmpeg", "-y",
         "-i", video_path,
         "-i", logo_path,
         "-filter_complex",
         f"[1:v]scale={logo_width}:-1,format=rgba,colorchannelmixer=aa={opacity}[logo];"
-        f"[0:v][logo]overlay=W-w-{margin}:{margin}",
+        f"[0:v][logo]overlay={overlay_xy}",
         "-c:a", "copy",
         "-pix_fmt", "yuv420p",
         out_path,
@@ -363,10 +396,12 @@ def compose_video(
     logo_width: int = DEFAULT_LOGO_WIDTH,
     logo_margin: int = DEFAULT_LOGO_MARGIN,
     logo_opacity: float = DEFAULT_LOGO_OPACITY,
+    logo_position: str = DEFAULT_LOGO_POSITION,
     bgm_path: str | None = None,
     bgm_volume: float = DEFAULT_BGM_VOLUME,
     intro_path: str | None = None,
     outro_path: str | None = None,
+    custom_dict_path: str | None = None,
 ) -> None:
     if not slides:
         raise VideoComposeError("slides must not be empty")
@@ -377,7 +412,13 @@ def compose_video(
     durations_ms = [get_audio_duration_ms(s.audio_path) for s in slides]
     offsets_ms = _compute_slide_offsets(durations_ms, transition_duration_ms)
 
-    cues = _build_cues(slides, durations_ms, transition_duration_ms)
+    # A per-job custom dictionary needs its own isolated jieba.Tokenizer (see
+    # wordseg.py) — the shared default segmenter otherwise covers every job
+    # that doesn't supply one, so it's not rebuilt from scratch here.
+    word_segmenter = (
+        WordSegmenter(custom_dict_path) if custom_dict_path else get_default_segmenter()
+    )
+    cues = _build_cues(slides, durations_ms, transition_duration_ms, word_segmenter)
     with open(out_srt_path, "w", encoding="utf-8", newline="") as f:
         f.write(cues_to_srt(cues))
 
@@ -406,7 +447,15 @@ def compose_video(
 
         if logo_path:
             next_path = f"{temp_dir}/02_logo.mp4"
-            _add_logo_overlay(current, logo_path, next_path, logo_width, logo_margin, opacity=logo_opacity)
+            _add_logo_overlay(
+                current,
+                logo_path,
+                next_path,
+                logo_width,
+                logo_margin,
+                opacity=logo_opacity,
+                position=logo_position,
+            )
             current = next_path
 
         if bgm_path:

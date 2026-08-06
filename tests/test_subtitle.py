@@ -11,6 +11,7 @@ from ppt2course.subtitle import (
     TimedChunk,
     cues_to_srt,
     generate_cues,
+    split_into_sentences,
     split_text_into_chunks,
     strip_cue_punctuation,
 )
@@ -74,6 +75,63 @@ def test_protected_phrase_avoided_even_with_no_punctuation_nearby():
     for i in range(len(chunks) - 1):
         assert not chunks[i].endswith("帳戶"), f"'帳戶核對' split apart: {chunks[i]!r}"
         assert not chunks[i + 1].startswith("核對"), f"'帳戶核對' split apart: {chunks[i + 1]!r}"
+
+
+# ---------- protected_spans: generic word-boundary protection (e.g. jieba) ----------
+
+
+def test_protected_spans_param_prevents_hard_cut_through_an_arbitrary_span():
+    # No punctuation anywhere in this text at all, so every tier is empty and
+    # the splitter has no choice but to fall back to a hard character-count
+    # cut — exactly the fallback path a jieba word span (this term isn't in
+    # PROTECTED_PHRASES) needs to redirect around.
+    text = "我們的產品叫做普拉斯提亞雲端系統效能非常優異值得推薦給大家使用"
+    term = "普拉斯提亞"
+    idx = text.index(term)
+    spans = ((idx, idx + len(term)),)
+
+    # Confirms the scenario is meaningful: with no protection, the hard cut
+    # really does land in the middle of the term.
+    without_protection = split_text_into_chunks(text, max_chars=9)
+    assert not any(term in c for c in without_protection)
+
+    protected = split_text_into_chunks(text, max_chars=9, protected_spans=spans)
+    assert "".join(protected) == text
+    assert any(term in c for c in protected)
+
+
+def test_generate_cues_forwards_protected_spans_to_the_splitter():
+    text = "我們的產品叫做普拉斯提亞雲端系統效能非常優異值得推薦給大家使用"
+    term = "普拉斯提亞"
+    idx = text.index(term)
+    chunks = _uniform_chunks(text, ms_per_char=50)
+
+    cues_without = generate_cues(chunks, max_chars=9)
+    assert not any(term in c.text for c in cues_without)
+
+    cues_with = generate_cues(chunks, max_chars=9, protected_spans=((idx, idx + len(term)),))
+    assert any(term in c.text for c in cues_with)
+
+
+# ---------- split_into_sentences: coarse sentence-level splitting for TTS pause insertion ----------
+
+
+def test_split_into_sentences_keeps_terminal_punctuation_with_its_sentence():
+    text = "各位同仁大家好。今天要介紹職場健康！大家準備好了嗎？"
+    sentences = split_into_sentences(text)
+    assert sentences == ["各位同仁大家好。", "今天要介紹職場健康！", "大家準備好了嗎？"]
+
+
+def test_split_into_sentences_ignores_clause_level_commas():
+    text = "各位同仁大家好，歡迎參加本次教育訓練課程，謝謝大家的參與。"
+    sentences = split_into_sentences(text)
+    assert sentences == [text]
+
+
+def test_split_into_sentences_drops_empty_and_whitespace_only_pieces():
+    assert split_into_sentences("") == []
+    assert split_into_sentences("   ") == []
+    assert split_into_sentences("你好。") == ["你好。"]
 
 
 # ---------- quotation marks: never split a quoted phrase across chunks ----------

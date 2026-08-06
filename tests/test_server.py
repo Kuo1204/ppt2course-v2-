@@ -100,6 +100,113 @@ def test_create_job_forwards_subtitle_margin_v(tmp_path):
     assert calls[0]["subtitle_margin_v"] == 220
 
 
+def test_create_job_forwards_logo_position(tmp_path):
+    calls = []
+
+    def fake_pipeline(**kwargs):
+        calls.append(kwargs)
+        return {}
+
+    client, manager = _make_client(fake_pipeline, tmp_path)
+
+    client.post(
+        "/api/jobs",
+        data=_upload_form(logo_position="bottom-left"),
+        files=_upload_files(),
+    )
+    manager.process_next()
+
+    assert calls[0]["logo_position"] == "bottom-left"
+
+
+def test_create_job_defaults_logo_position_to_top_right(tmp_path):
+    calls = []
+
+    def fake_pipeline(**kwargs):
+        calls.append(kwargs)
+        return {}
+
+    client, manager = _make_client(fake_pipeline, tmp_path)
+
+    client.post("/api/jobs", data=_upload_form(), files=_upload_files())
+    manager.process_next()
+
+    assert calls[0]["logo_position"] == "top-right"
+
+
+def test_create_job_rejects_invalid_logo_position(tmp_path):
+    def fake_pipeline(**kwargs):
+        return {}
+
+    client, _manager = _make_client(fake_pipeline, tmp_path)
+
+    response = client.post(
+        "/api/jobs",
+        data=_upload_form(logo_position="middle"),
+        files=_upload_files(),
+    )
+
+    assert response.status_code == 400
+
+
+def test_create_job_forwards_sentence_pause_ms(tmp_path):
+    calls = []
+
+    def fake_pipeline(**kwargs):
+        calls.append(kwargs)
+        return {}
+
+    client, manager = _make_client(fake_pipeline, tmp_path)
+
+    client.post(
+        "/api/jobs",
+        data=_upload_form(sentence_pause_ms="500"),
+        files=_upload_files(),
+    )
+    manager.process_next()
+
+    assert calls[0]["sentence_pause_ms"] == 500
+
+
+def test_create_job_writes_custom_dict_to_a_file_and_forwards_its_path(tmp_path):
+    import os
+
+    calls = []
+
+    def fake_pipeline(**kwargs):
+        calls.append(kwargs)
+        return {}
+
+    client, manager = _make_client(fake_pipeline, tmp_path)
+
+    client.post(
+        "/api/jobs",
+        data=_upload_form(custom_dict="普拉斯提亞 100\n辰昕科技\n"),
+        files=_upload_files(),
+    )
+    manager.process_next()
+
+    custom_dict_path = calls[0]["custom_dict_path"]
+    assert custom_dict_path is not None
+    assert os.path.exists(custom_dict_path)
+    assert "普拉斯提亞 100" in open(custom_dict_path, encoding="utf-8").read()
+
+
+def test_create_job_leaves_custom_dict_path_none_when_not_supplied(tmp_path):
+    calls = []
+
+    def fake_pipeline(**kwargs):
+        calls.append(kwargs)
+        return {}
+
+    client, manager = _make_client(fake_pipeline, tmp_path)
+
+    client.post("/api/jobs", data=_upload_form(), files=_upload_files())
+    manager.process_next()
+
+    assert calls[0]["custom_dict_path"] is None
+
+
 def test_create_job_forwards_logo_opacity(tmp_path):
     calls = []
 

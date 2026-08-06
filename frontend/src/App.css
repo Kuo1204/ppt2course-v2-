@@ -411,6 +411,71 @@ input[type="range"] {
   transition: bottom 0.05s linear, font-size 0.1s ease;
 }
 
+.logo-position-field {
+  margin-top: 12px;
+}
+
+.logo-position-field > label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.logo-position-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+  max-width: 420px;
+  margin-top: 8px;
+}
+
+.logo-position-btn {
+  padding: 6px 4px;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.logo-position-btn:hover {
+  border-color: var(--accent);
+}
+
+.logo-position-btn.active {
+  color: var(--surface);
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.logo-position-preview {
+  position: relative;
+  margin-top: 10px;
+  width: 100%;
+  max-width: 420px;
+  aspect-ratio: 16 / 9;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  overflow: hidden;
+  background:
+    linear-gradient(135deg, var(--surface-raised), var(--surface))
+    center / cover no-repeat;
+  background-size: cover;
+  background-position: center;
+}
+
+.logo-position-preview-logo {
+  position: absolute;
+  width: 18%;
+  max-height: 40%;
+  object-fit: contain;
+  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.5));
+}
+
 .field-with-action {
   display: flex;
   gap: 8px;

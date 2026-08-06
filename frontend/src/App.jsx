@@ -82,6 +82,32 @@ const LOGO_OPACITY_MIN = 10;
 const LOGO_OPACITY_MAX = 100;
 const LOGO_OPACITY_DEFAULT = 100;
 
+const LOGO_POSITIONS = [
+  { value: "top-left", label: "左上" },
+  { value: "top-right", label: "右上" },
+  { value: "bottom-left", label: "左下" },
+  { value: "bottom-right", label: "右下" },
+];
+const LOGO_POSITION_DEFAULT = "top-right";
+
+// Mirrors the backend's ffmpeg overlay=x:y corner placement (video.py's
+// _LOGO_POSITION_OVERLAYS) so the little preview box actually matches
+// where the logo lands in the real video.
+function logoPositionStyle(position) {
+  const edge = "6%";
+  switch (position) {
+    case "top-left":
+      return { top: edge, left: edge };
+    case "bottom-left":
+      return { bottom: edge, left: edge };
+    case "bottom-right":
+      return { bottom: edge, right: edge };
+    case "top-right":
+    default:
+      return { top: edge, right: edge };
+  }
+}
+
 // Expressed as % of frame height (distance from the bottom edge) rather
 // than a raw pixel count, so the same slider position looks the same
 // whether the job renders at 720p or 4K — the backend still ultimately
@@ -91,6 +117,17 @@ const LOGO_OPACITY_DEFAULT = 100;
 const SUBTITLE_POSITION_MIN = 2;
 const SUBTITLE_POSITION_MAX = 30;
 const SUBTITLE_POSITION_DEFAULT = 3;
+
+// edge-tts synthesizes a whole slide's script as one continuous utterance —
+// its voices pause a little at 。！？ on their own, but not enough to read
+// as a person taking a breath between sentences. 300ms splices in a real
+// silent gap between sentences (see pipeline.py's
+// _synthesize_with_sentence_pauses) without making multi-sentence slides
+// drag; 0 turns it off and reproduces the old one-breath narration.
+const SENTENCE_PAUSE_MIN = 0;
+const SENTENCE_PAUSE_MAX = 800;
+const SENTENCE_PAUSE_STEP = 50;
+const SENTENCE_PAUSE_DEFAULT = 300;
 
 const GEMINI_API_KEY_URL = "https://aistudio.google.com/app/apikey";
 const POLL_INTERVAL_MS = 2000;
@@ -150,9 +187,12 @@ function App() {
   const [subtitlePositionPercent, setSubtitlePositionPercent] = useState(SUBTITLE_POSITION_DEFAULT);
   const [logoFile, setLogoFile] = useState(null);
   const [logoOpacity, setLogoOpacity] = useState(LOGO_OPACITY_DEFAULT);
+  const [logoPosition, setLogoPosition] = useState(LOGO_POSITION_DEFAULT);
   const [bgmFile, setBgmFile] = useState(null);
   const [introFile, setIntroFile] = useState(null);
   const [outroFile, setOutroFile] = useState(null);
+  const [sentencePauseMs, setSentencePauseMs] = useState(SENTENCE_PAUSE_DEFAULT);
+  const [customDict, setCustomDict] = useState("");
 
   const [submitting, setSubmitting] = useState(false);
   const [jobId, setJobId] = useState(null);
@@ -310,9 +350,12 @@ function App() {
     setSubtitlePositionPercent(SUBTITLE_POSITION_DEFAULT);
     setLogoFile(null);
     setLogoOpacity(LOGO_OPACITY_DEFAULT);
+    setLogoPosition(LOGO_POSITION_DEFAULT);
     setBgmFile(null);
     setIntroFile(null);
     setOutroFile(null);
+    setSentencePauseMs(SENTENCE_PAUSE_DEFAULT);
+    setCustomDict("");
     setSubmitting(false);
     setScriptPreviewStatus("idle");
     setScriptPreviewError(null);
@@ -414,10 +457,13 @@ function App() {
     if (logoFile) {
       form.append("logo", logoFile);
       form.append("logo_opacity", String(logoOpacity / 100));
+      form.append("logo_position", logoPosition);
     }
     if (bgmFile) form.append("bgm", bgmFile);
     if (introFile) form.append("intro", introFile);
     if (outroFile) form.append("outro", outroFile);
+    form.append("sentence_pause_ms", String(sentencePauseMs));
+    if (customDict.trim()) form.append("custom_dict", customDict);
 
     setSubmitting(true);
     setFormError(null);
@@ -545,12 +591,18 @@ function App() {
                 setLogoFile={setLogoFile}
                 logoOpacity={logoOpacity}
                 setLogoOpacity={setLogoOpacity}
+                logoPosition={logoPosition}
+                setLogoPosition={setLogoPosition}
                 bgmFile={bgmFile}
                 setBgmFile={setBgmFile}
                 introFile={introFile}
                 setIntroFile={setIntroFile}
                 outroFile={outroFile}
                 setOutroFile={setOutroFile}
+                sentencePauseMs={sentencePauseMs}
+                setSentencePauseMs={setSentencePauseMs}
+                customDict={customDict}
+                setCustomDict={setCustomDict}
               />
             )}
 
@@ -567,11 +619,15 @@ function App() {
                 resolutionLabel={resolutionLabel}
                 fontSizeLabel={fontSizeLabel}
                 subtitlePositionPercent={subtitlePositionPercent}
+                sentencePauseMs={sentencePauseMs}
                 extras={[
-                  logoFile && `Logo（透明度 ${logoOpacity}%）`,
+                  logoFile &&
+                    `Logo（${LOGO_POSITIONS.find((p) => p.value === logoPosition)?.label}角・透明度 ${logoOpacity}%）`,
                   bgmFile && "背景音樂",
                   introFile && "片頭",
                   outroFile && "片尾",
+                  customDict.trim() &&
+                    `自訂詞庫（${customDict.split("\n").filter((l) => l.trim()).length} 個詞）`,
                 ].filter(Boolean)}
               />
             )}
@@ -1124,12 +1180,18 @@ function ExtrasStep({
   setLogoFile,
   logoOpacity,
   setLogoOpacity,
+  logoPosition,
+  setLogoPosition,
   bgmFile,
   setBgmFile,
   introFile,
   setIntroFile,
   outroFile,
   setOutroFile,
+  sentencePauseMs,
+  setSentencePauseMs,
+  customDict,
+  setCustomDict,
 }) {
   return (
     <>
@@ -1165,6 +1227,41 @@ function ExtrasStep({
           </select>
         </div>
 
+        <div className="field">
+          <label htmlFor="sentence-pause-range">
+            講稿停頓{" "}
+            <span className="hint">
+              {sentencePauseMs === 0 ? "關閉" : `${sentencePauseMs} 毫秒`}
+            </span>
+          </label>
+          <input
+            id="sentence-pause-range"
+            type="range"
+            min={SENTENCE_PAUSE_MIN}
+            max={SENTENCE_PAUSE_MAX}
+            step={SENTENCE_PAUSE_STEP}
+            value={sentencePauseMs}
+            onChange={(e) => setSentencePauseMs(Number(e.target.value))}
+          />
+          <p className="hint" style={{ margin: "6px 0 0" }}>
+            句子之間插入短暫停頓，講起來更像真人講話的節奏；設為關閉則恢復一口氣唸完整段的舊行為。
+          </p>
+        </div>
+
+        <div className="field full">
+          <label htmlFor="custom-dict-textarea">自訂詞庫</label>
+          <textarea
+            id="custom-dict-textarea"
+            rows={3}
+            value={customDict}
+            onChange={(e) => setCustomDict(e.target.value)}
+            placeholder={"每行一個詞，例如公司名稱或專業術語：\n普拉斯提亞雲端\n職場健康促進計畫"}
+          />
+          <p className="hint" style={{ margin: "6px 0 0" }}>
+            讓字幕換行辨識這些詞，不會把它們從中間拆成兩行；不影響配音發音。
+          </p>
+        </div>
+
         <SubtitlePositionField
           percent={subtitlePositionPercent}
           setPercent={setSubtitlePositionPercent}
@@ -1177,6 +1274,9 @@ function ExtrasStep({
           onChange={setLogoFile}
           opacity={logoOpacity}
           setOpacity={setLogoOpacity}
+          position={logoPosition}
+          setPosition={setLogoPosition}
+          previewImageUrl={previewImageUrl}
         />
         <FileField label="背景音樂" file={bgmFile} onChange={setBgmFile} accept="audio/*" />
         <FileField label="片頭影片" file={introFile} onChange={setIntroFile} accept="video/*" />
@@ -1274,7 +1374,7 @@ function FileField({ label, file, onChange, accept }) {
   );
 }
 
-function LogoField({ file, onChange, opacity, setOpacity }) {
+function LogoField({ file, onChange, opacity, setOpacity, position, setPosition, previewImageUrl }) {
   const [resetKey, setResetKey] = useState(0);
   // `file ? [file] : []` is a fresh array on every render regardless of
   // whether `file` itself changed, so useObjectUrls' effect (keyed on that
@@ -1293,7 +1393,7 @@ function LogoField({ file, onChange, opacity, setOpacity }) {
 
   return (
     <div className="field full">
-      <label>Logo 圖片（右上角浮水印）</label>
+      <label>Logo 圖片（浮水印）</label>
       <div className="uploader">
         <input
           key={resetKey}
@@ -1330,6 +1430,42 @@ function LogoField({ file, onChange, opacity, setOpacity }) {
               onChange={(e) => setOpacity(Number(e.target.value))}
             />
           </div>
+        </div>
+      )}
+
+      {file && (
+        <div className="logo-position-field">
+          <label htmlFor="logo-position-group">Logo 位置</label>
+          <div id="logo-position-group" className="logo-position-grid" role="group" aria-label="Logo 位置">
+            {LOGO_POSITIONS.map((p) => (
+              <button
+                key={p.value}
+                type="button"
+                className={`logo-position-btn${position === p.value ? " active" : ""}`}
+                aria-pressed={position === p.value}
+                onClick={() => setPosition(p.value)}
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+
+          <div
+            className="logo-position-preview"
+            style={previewImageUrl ? { backgroundImage: `url(${previewImageUrl})` } : undefined}
+          >
+            <img
+              className="logo-position-preview-logo"
+              src={previewUrl}
+              alt=""
+              style={{ ...logoPositionStyle(position), opacity: opacity / 100 }}
+            />
+          </div>
+          <p className="hint" style={{ margin: "6px 0 0" }}>
+            {previewImageUrl
+              ? "位置按實際畫面比例預覽"
+              : "先在 Step 01 上傳投影片圖片，這裡就會用實際畫面預覽 Logo 位置"}
+          </p>
         </div>
       )}
     </div>
@@ -1384,6 +1520,7 @@ function ReviewStep({
   resolutionLabel,
   fontSizeLabel,
   subtitlePositionPercent,
+  sentencePauseMs,
   extras,
 }) {
   const rows = useMemo(
@@ -1400,6 +1537,7 @@ function ReviewStep({
       ["解析度", resolutionLabel],
       ["字幕大小", fontSizeLabel],
       ["字幕高度", `距離底部 ${subtitlePositionPercent}%`],
+      ["講稿停頓", sentencePauseMs === 0 ? "關閉" : `${sentencePauseMs} 毫秒`],
       ["額外項目", extras.length ? extras.join("、") : "無"],
     ],
     [
@@ -1414,6 +1552,7 @@ function ReviewStep({
       resolutionLabel,
       fontSizeLabel,
       subtitlePositionPercent,
+      sentencePauseMs,
       extras,
     ]
   );
@@ -1508,7 +1647,9 @@ function HelpWidget() {
               </li>
               <li>
                 <b>進階選項</b>
-                <span>Logo、背景音樂、片頭尾、字幕大小與高度，全部選填，不設定也沒關係。</span>
+                <span>
+                  Logo、背景音樂、片頭尾、字幕大小與高度、講稿停頓、自訂詞庫，全部選填，不設定也沒關係。
+                </span>
               </li>
               <li>
                 <b>開始製作</b>
@@ -1524,6 +1665,9 @@ function HelpWidget() {
                   用截圖而非系統重畫投影片，才不會字型跑掉、版面跑版
                 </li>
                 <li>自己貼講稿時，用「第1頁」「第一頁」這樣的格式標記每一頁</li>
+                <li>
+                  講稿裡有公司名稱、專有名詞怕字幕被拆成兩半？在「自訂詞庫」每行填一個詞，換行就會避開它們
+                </li>
                 <li>完成後除了下載，也能用 QR Code 讓手機直接掃碼下載</li>
                 <li>產出的檔案會保留 24 小時，請盡快下載</li>
               </ul>

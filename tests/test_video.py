@@ -85,6 +85,33 @@ def test_build_cues_overlap_delays_next_slide_without_truncating_previous():
     ]
 
 
+class _FakeWordSegmenter:
+    def __init__(self, spans):
+        self._spans = spans
+
+    def word_spans(self, text):
+        return self._spans
+
+
+def test_build_cues_uses_word_segmenter_to_protect_a_span_from_a_hard_cut():
+    # No punctuation at all -> the default-max_chars hard cut lands at
+    # position 18, right in the middle of the term below (span 15-20),
+    # unless a word_segmenter reports it as a span to protect.
+    text = "今天要來跟大家介紹一下這個主題普拉斯提亞雲端系統效能非常優異值得推薦給大家使用"
+    term = "普拉斯提亞"
+    idx = text.index(term)
+    chunks = [TimedChunk(ch, i * 50, i * 50 + 50) for i, ch in enumerate(text)]
+    slide = _slide(chunks)
+    durations = [len(text) * 50]
+
+    cues_without = _build_cues([slide], durations, transition_ms=0)
+    assert not any(term in c.text for c in cues_without)
+
+    segmenter = _FakeWordSegmenter([(idx, idx + len(term))])
+    cues_with = _build_cues([slide], durations, transition_ms=0, word_segmenter=segmenter)
+    assert any(term in c.text for c in cues_with)
+
+
 def test_build_cues_delay_propagates_to_third_slide():
     slide1 = _slide([TimedChunk("一", 0, 1000), TimedChunk("。", 1000, 1000)])
     slide2 = _slide([TimedChunk("二", 0, 200), TimedChunk("。", 200, 200)])
@@ -292,6 +319,38 @@ def test_compose_video_raises_on_nonzero_ffmpeg_exit(tmp_path):
                     )
 
 
+def test_compose_video_forwards_custom_dict_path_to_protect_srt_line_breaks(tmp_path):
+    # Real jieba, no mocking. No punctuation at all -> the default hard cut
+    # at position 18 lands inside this invented term (span 15-20) unless a
+    # custom dictionary teaches jieba to treat it as one word.
+    text = "今天要來跟大家介紹一下這個主題普拉斯提亞雲端系統效能非常優異值得推薦給大家使用"
+    term = "普拉斯提亞"
+    chunks = [TimedChunk(ch, i * 50, i * 50 + 50) for i, ch in enumerate(text)]
+    slide = _slide(chunks)
+
+    dict_path = tmp_path / "custom_dict.txt"
+    dict_path.write_text(f"{term} 100\n", encoding="utf-8")
+
+    srt_path = tmp_path / "out.srt"
+
+    class FakeResult:
+        returncode = 0
+        stderr = ""
+
+    with patch("ppt2course.video.shutil.which", return_value="/usr/bin/ffmpeg"):
+        with patch("ppt2course.video.get_audio_duration_ms", return_value=len(text) * 50):
+            with patch("ppt2course.video.subprocess.run", return_value=FakeResult()):
+                compose_video(
+                    [slide],
+                    str(tmp_path / "out.mp4"),
+                    str(srt_path),
+                    custom_dict_path=str(dict_path),
+                )
+
+    srt_content = srt_path.read_text(encoding="utf-8")
+    assert term in srt_content
+
+
 def test_compose_video_writes_srt_and_calls_ffmpeg(tmp_path):
     slide1 = _slide([TimedChunk("你好", 0, 800), TimedChunk("。", 800, 800)])
     slide2 = _slide([TimedChunk("謝謝", 0, 700), TimedChunk("。", 700, 700)])
@@ -374,6 +433,41 @@ def test_add_logo_overlay_applies_custom_opacity():
 
     filter_arg = mock_run.call_args[0][0][mock_run.call_args[0][0].index("-filter_complex") + 1]
     assert "colorchannelmixer=aa=0.4[logo]" in filter_arg
+
+
+def test_add_logo_overlay_defaults_to_top_right():
+    with patch("ppt2course.video.subprocess.run", return_value=_fake_run_ok()) as mock_run:
+        _add_logo_overlay("video.mp4", "logo.png", "out.mp4", logo_width=160, margin=24)
+
+    filter_arg = mock_run.call_args[0][0][mock_run.call_args[0][0].index("-filter_complex") + 1]
+    assert "overlay=W-w-24:24" in filter_arg
+
+
+@pytest.mark.parametrize(
+    "position, expected_overlay",
+    [
+        ("top-left", "overlay=24:24"),
+        ("top-right", "overlay=W-w-24:24"),
+        ("bottom-left", "overlay=24:H-h-24"),
+        ("bottom-right", "overlay=W-w-24:H-h-24"),
+    ],
+)
+def test_add_logo_overlay_positions_at_each_corner(position, expected_overlay):
+    with patch("ppt2course.video.subprocess.run", return_value=_fake_run_ok()) as mock_run:
+        _add_logo_overlay(
+            "video.mp4", "logo.png", "out.mp4", logo_width=160, margin=24, position=position
+        )
+
+    filter_arg = mock_run.call_args[0][0][mock_run.call_args[0][0].index("-filter_complex") + 1]
+    assert expected_overlay in filter_arg
+
+
+def test_add_logo_overlay_rejects_unknown_position():
+    with patch("ppt2course.video.subprocess.run", return_value=_fake_run_ok()):
+        with pytest.raises(ValueError, match="logo_position"):
+            _add_logo_overlay(
+                "video.mp4", "logo.png", "out.mp4", logo_width=160, margin=24, position="middle"
+            )
 
 
 def test_add_logo_overlay_raises_on_nonzero_exit():
@@ -492,6 +586,28 @@ def test_compose_video_forwards_logo_opacity_to_overlay_filter(tmp_path):
     logo_call = next(c for c in mock_run.call_args_list if "logo.png" in c[0][0])
     filter_arg = logo_call[0][0][logo_call[0][0].index("-filter_complex") + 1]
     assert "colorchannelmixer=aa=0.5[logo]" in filter_arg
+
+
+def test_compose_video_forwards_logo_position_to_overlay_filter(tmp_path):
+    slide1 = _slide([TimedChunk("你好", 0, 800), TimedChunk("。", 800, 800)])
+
+    with patch("ppt2course.video.shutil.which", return_value="/usr/bin/ffmpeg"):
+        with patch("ppt2course.video.get_audio_duration_ms", return_value=1000):
+            with patch("ppt2course.video.shutil.copy"):
+                with patch(
+                    "ppt2course.video.subprocess.run", return_value=_fake_run_ok()
+                ) as mock_run:
+                    compose_video(
+                        [slide1],
+                        str(tmp_path / "out.mp4"),
+                        str(tmp_path / "out.srt"),
+                        logo_path="logo.png",
+                        logo_position="bottom-left",
+                    )
+
+    logo_call = next(c for c in mock_run.call_args_list if "logo.png" in c[0][0])
+    filter_arg = logo_call[0][0][logo_call[0][0].index("-filter_complex") + 1]
+    assert "overlay=24:H-h-24" in filter_arg
 
 
 def test_compose_video_no_optional_extras_only_calls_ffmpeg_once(tmp_path):
