@@ -3,9 +3,19 @@
 // at a separately running backend (see .env.development).
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "";
 
+// The public deployment's ngrok free-tier domain shows visitors an
+// interstitial "You are about to visit..." warning page before the first
+// request each browser makes — normally cleared by clicking through once,
+// but this header skips it outright. Harmless to send everywhere (local
+// dev, Cloudflare, anything else just ignores an unknown header), and
+// guards every one of *our own* fetch calls against ever receiving that
+// warning's HTML back instead of the JSON they expect.
+const NGROK_BYPASS_HEADERS = { "ngrok-skip-browser-warning": "true" };
+
 export async function createJob(formData) {
   const response = await fetch(`${API_BASE_URL}/api/jobs`, {
     method: "POST",
+    headers: NGROK_BYPASS_HEADERS,
     body: formData,
   });
 
@@ -18,7 +28,9 @@ export async function createJob(formData) {
 }
 
 export async function getJobStatus(jobId) {
-  const response = await fetch(`${API_BASE_URL}/api/jobs/${jobId}`);
+  const response = await fetch(`${API_BASE_URL}/api/jobs/${jobId}`, {
+    headers: NGROK_BYPASS_HEADERS,
+  });
   if (!response.ok) {
     throw new Error(`查詢任務狀態失敗 (HTTP ${response.status})`);
   }
@@ -35,6 +47,7 @@ export async function extractScriptText(file) {
 
   const response = await fetch(`${API_BASE_URL}/api/extract-script-text`, {
     method: "POST",
+    headers: NGROK_BYPASS_HEADERS,
     body: form,
   });
 
@@ -52,6 +65,7 @@ export async function fetchPptxPreview(pptxFile) {
 
   const response = await fetch(`${API_BASE_URL}/api/pptx-preview`, {
     method: "POST",
+    headers: NGROK_BYPASS_HEADERS,
     body: form,
   });
 
@@ -73,6 +87,7 @@ export async function generateScriptPreview({ pptxFile, scriptMode, geminiApiKey
 
   const response = await fetch(`${API_BASE_URL}/api/generate-script`, {
     method: "POST",
+    headers: NGROK_BYPASS_HEADERS,
     body: form,
   });
 
@@ -91,7 +106,8 @@ export async function fetchVoicePreview(voice, rate, volume) {
   const query = params.toString() ? `?${params.toString()}` : "";
 
   const response = await fetch(
-    `${API_BASE_URL}/api/voice-preview/${encodeURIComponent(voice)}${query}`
+    `${API_BASE_URL}/api/voice-preview/${encodeURIComponent(voice)}${query}`,
+    { headers: NGROK_BYPASS_HEADERS }
   );
 
   if (!response.ok) {
