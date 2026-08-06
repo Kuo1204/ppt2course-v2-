@@ -4,6 +4,7 @@ import pytest
 
 from ppt2course.subtitle import TimedChunk
 from ppt2course.video import (
+    MIN_SLIDE_HOLD_MS,
     SlideVideoInput,
     VideoComposeError,
     _add_logo_overlay,
@@ -12,6 +13,7 @@ from ppt2course.video import (
     _build_ffmpeg_command,
     _compute_slide_offsets,
     _concatenate_with_intro_outro,
+    _effective_transition_ms,
     _mix_background_music,
     _scale_pad_filter,
     _total_duration_ms,
@@ -40,6 +42,49 @@ def test_compute_slide_offsets_three_slides():
 
 def test_compute_slide_offsets_zero_transition():
     assert _compute_slide_offsets([1000, 1000], 0) == [0, 1000]
+
+
+# ---- _effective_transition_ms ----
+# A slide's own audio duration limits how long any transition touching it
+# can be — a crossfade longer than the clip it's crossfading breaks the
+# cumulative-offset math (_compute_slide_offsets assumes each slide adds
+# durations_ms[i] - transition_ms of new timeline; if the transition is >=
+# a slide's duration, that delta goes to zero or negative, which is exactly
+# what produced the reported "subtitles drift out of sync / audio overlaps"
+# bug when the transition slider was maxed out next to a short slide).
+
+
+def test_effective_transition_ms_returns_request_unchanged_when_it_fits():
+    assert _effective_transition_ms([5000, 5000], 500) == 500
+
+
+def test_effective_transition_ms_clamps_to_the_shorter_of_two_slides():
+    # budget is durations[1] (800ms) minus the safety margin
+    assert _effective_transition_ms([5000, 800], 2000) == 800 - MIN_SLIDE_HOLD_MS
+
+
+def test_effective_transition_ms_halves_an_interior_slides_budget():
+    # the middle slide has both an incoming and an outgoing transition to
+    # pay for out of its own 400ms, so each side gets at most half
+    assert _effective_transition_ms([5000, 400, 5000], 2000) == 200 - MIN_SLIDE_HOLD_MS
+
+
+def test_effective_transition_ms_never_goes_negative():
+    assert _effective_transition_ms([5000, 50, 5000], 2000) == 0
+
+
+def test_effective_transition_ms_single_slide_passes_through_unchanged():
+    assert _effective_transition_ms([5000], 2000) == 2000
+
+
+def test_effective_transition_ms_empty_passes_through_unchanged():
+    assert _effective_transition_ms([], 2000) == 2000
+
+
+def test_effective_transition_ms_first_and_last_slide_only_pay_once():
+    # first/last slides only have one neighboring transition, not two, so
+    # they get their full duration as budget rather than half of it
+    assert _effective_transition_ms([1000, 5000, 1000], 2000) == 1000 - MIN_SLIDE_HOLD_MS
 
 
 # ---- _total_duration_ms ----

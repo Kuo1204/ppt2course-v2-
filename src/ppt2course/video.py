@@ -71,6 +71,30 @@ class SlideVideoInput:
     chunks: list[TimedChunk]
 
 
+# The minimum stretch of a slide's own audio that must remain outside any
+# neighboring crossfade, even in the worst case. Without this floor, a
+# transition duration close to (or longer than) a short slide's own audio
+# lets _compute_slide_offsets' delta (durations_ms[i] - transition_ms) hit
+# zero or go negative — the cumulative offset stops advancing (or drifts
+# backwards) from that slide onward, which is exactly what produced the
+# reported "字幕與聲音對不上... 聲音重疊" bug when the transition slider was
+# pushed to its 2-second max next to a short slide.
+MIN_SLIDE_HOLD_MS = 100
+
+
+def _effective_transition_ms(durations_ms: list[int], requested_transition_ms: int) -> int:
+    if len(durations_ms) < 2:
+        return requested_transition_ms
+
+    # The first and last slide only border one transition each; every
+    # interior slide borders two (an incoming crossfade eating its head, an
+    # outgoing one eating its tail) and so can only spend half its own
+    # duration on each side.
+    budgets = [durations_ms[0], *(d / 2 for d in durations_ms[1:-1]), durations_ms[-1]]
+    safe_max_ms = int(min(budgets)) - MIN_SLIDE_HOLD_MS
+    return max(0, min(requested_transition_ms, safe_max_ms))
+
+
 def _compute_slide_offsets(durations_ms: list[int], transition_ms: int) -> list[int]:
     if not durations_ms:
         return []
@@ -416,6 +440,11 @@ def compose_video(
         raise VideoComposeError("ffmpeg executable not found")
 
     durations_ms = [get_audio_duration_ms(s.audio_path) for s in slides]
+    # Reassigned (not a new variable) so every downstream use of
+    # transition_duration_ms below — offsets, subtitle cues, and the ffmpeg
+    # xfade/acrossfade filters — automatically agrees on the same,
+    # per-slide-audio-safe value.
+    transition_duration_ms = _effective_transition_ms(durations_ms, transition_duration_ms)
     offsets_ms = _compute_slide_offsets(durations_ms, transition_duration_ms)
 
     # A per-job custom dictionary needs its own isolated jieba.Tokenizer (see

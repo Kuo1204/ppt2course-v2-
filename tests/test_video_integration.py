@@ -2,6 +2,7 @@
 
 import glob
 import os
+import re
 import shutil
 import subprocess
 
@@ -13,6 +14,7 @@ from ppt2course.tts import synthesize
 from ppt2course.video import (
     SlideVideoInput,
     _compute_slide_offsets,
+    _effective_transition_ms,
     _total_duration_ms,
     compose_video,
 )
@@ -230,3 +232,86 @@ def test_logo_opacity_actually_changes_the_composited_pixel_real_ffmpeg(tmp_path
     # at half opacity the green background must show through, meaningfully
     # raising the green channel versus the fully-opaque render
     assert half_pixel[1] > opaque_pixel[1] + 40
+
+
+def _srt_cue_times_ms(srt_text: str) -> list[tuple[int, int]]:
+    def to_ms(ts: str) -> int:
+        h, m, rest = ts.split(":")
+        s, ms = rest.split(",")
+        return ((int(h) * 60 + int(m)) * 60 + int(s)) * 1000 + int(ms)
+
+    return [
+        (to_ms(start), to_ms(end))
+        for start, end in re.findall(
+            r"(\d{2}:\d{2}:\d{2},\d{3}) --> (\d{2}:\d{2}:\d{2},\d{3})", srt_text
+        )
+    ]
+
+
+def test_compose_video_with_a_short_slide_and_max_transition_keeps_subtitles_in_sync(tmp_path):
+    # Regression test for a real user report: pushing the transition-duration
+    # slider to its 2-second max produced subtitles that drifted out of sync
+    # with the narration, and audibly overlapping audio, whenever a slide's
+    # own narration was shorter than the transition. Root cause: nothing
+    # clamped the requested transition against the actual (short) slide
+    # audio it would be crossfaded against — see _effective_transition_ms.
+    # The middle slide here is deliberately given a near-silent one-syllable
+    # line so its real edge-tts audio comes back well under 2 seconds.
+    voice = "zh-TW-HsiaoChenNeural"
+
+    img1 = str(tmp_path / "slide1.png")
+    img2 = str(tmp_path / "slide2.png")
+    img3 = str(tmp_path / "slide3.png")
+    _make_color_image(img1, "red")
+    _make_color_image(img2, "blue")
+    _make_color_image(img3, "green")
+
+    audio1 = str(tmp_path / "slide1.mp3")
+    audio2 = str(tmp_path / "slide2.mp3")
+    audio3 = str(tmp_path / "slide3.mp3")
+    chunks1 = synthesize("這是第一頁比較長的旁白內容，用來確認字幕的起始時間是正確的。", voice, audio1)
+    chunks2 = synthesize("嗯。", voice, audio2)
+    chunks3 = synthesize("這是第三頁比較長的旁白內容，用來確認字幕的結束時間是正確的。", voice, audio3)
+
+    slides = [
+        SlideVideoInput(image_path=img1, audio_path=audio1, chunks=chunks1),
+        SlideVideoInput(image_path=img2, audio_path=audio2, chunks=chunks2),
+        SlideVideoInput(image_path=img3, audio_path=audio3, chunks=chunks3),
+    ]
+    durations_ms = [
+        get_audio_duration_ms(audio1),
+        get_audio_duration_ms(audio2),
+        get_audio_duration_ms(audio3),
+    ]
+    # The repro only works if the middle slide really is shorter than the
+    # requested transition — otherwise this test would pass even with the
+    # bug still present.
+    assert durations_ms[1] < 2000
+
+    out_video = str(tmp_path / "out.mp4")
+    out_srt = str(tmp_path / "out.srt")
+    requested_transition_ms = 2000  # the reported max slider value
+
+    compose_video(slides, out_video, out_srt, transition_duration_ms=requested_transition_ms)
+
+    assert os.path.exists(out_video)
+    assert os.path.getsize(out_video) > 0
+
+    cues = _srt_cue_times_ms(open(out_srt, encoding="utf-8").read())
+    assert len(cues) >= 3
+    # The bug produced non-monotonic (even backwards) cue timing once the
+    # transition ate more than a short slide's entire audio — every cue
+    # must start no earlier than the previous one, and none may start
+    # before its own end.
+    for start_ms, end_ms in cues:
+        assert start_ms <= end_ms
+    for (_, prev_end), (next_start, _) in zip(cues, cues[1:]):
+        assert next_start >= prev_end
+
+    # The rendered video's real length must match the *clamped* timeline,
+    # not the naive one the old (buggy) math would have predicted.
+    effective_transition_ms = _effective_transition_ms(durations_ms, requested_transition_ms)
+    assert effective_transition_ms < requested_transition_ms  # confirms clamping actually kicked in
+    expected_total_ms = _total_duration_ms(durations_ms, effective_transition_ms)
+    actual_ms = get_audio_duration_ms(out_video)
+    assert abs(actual_ms - expected_total_ms) <= 300
