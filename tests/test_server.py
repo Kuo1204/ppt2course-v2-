@@ -149,25 +149,6 @@ def test_create_job_rejects_invalid_logo_position(tmp_path):
     assert response.status_code == 400
 
 
-def test_create_job_forwards_sentence_pause_ms(tmp_path):
-    calls = []
-
-    def fake_pipeline(**kwargs):
-        calls.append(kwargs)
-        return {}
-
-    client, manager = _make_client(fake_pipeline, tmp_path)
-
-    client.post(
-        "/api/jobs",
-        data=_upload_form(sentence_pause_ms="500"),
-        files=_upload_files(),
-    )
-    manager.process_next()
-
-    assert calls[0]["sentence_pause_ms"] == 500
-
-
 def test_create_job_writes_custom_dict_to_a_file_and_forwards_its_path(tmp_path):
     import os
 

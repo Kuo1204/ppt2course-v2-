@@ -23,7 +23,6 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from ppt2course.jobs import JobManager, JobStatus
-from ppt2course.pipeline import DEFAULT_SENTENCE_PAUSE_MS
 from ppt2course.pptx_preview import DEFAULT_THUMBNAIL_WIDTH, PptxPreviewError, render_pptx_thumbnails
 from ppt2course.script_extract import ScriptExtractionError, extract_text_from_file
 from ppt2course.script_gen import (
@@ -151,7 +150,6 @@ def create_app(
         logo_position: str = Form(DEFAULT_LOGO_POSITION),
         bgm_volume: float = Form(DEFAULT_BGM_VOLUME),
         custom_dict: str | None = Form(None),
-        sentence_pause_ms: int = Form(DEFAULT_SENTENCE_PAUSE_MS),
         logo: UploadFile | None = File(None),
         bgm: UploadFile | None = File(None),
         intro: UploadFile | None = File(None),
@@ -228,7 +226,6 @@ def create_app(
             intro_path=intro_path,
             outro_path=outro_path,
             custom_dict_path=custom_dict_path,
-            sentence_pause_ms=sentence_pause_ms,
         )
         return {"job_id": job_id}
 

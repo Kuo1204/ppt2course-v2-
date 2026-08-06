@@ -146,17 +146,6 @@ const SUBTITLE_POSITION_MIN = 2;
 const SUBTITLE_POSITION_MAX = 30;
 const SUBTITLE_POSITION_DEFAULT = 3;
 
-// edge-tts synthesizes a whole slide's script as one continuous utterance —
-// its voices pause a little at 。！？ on their own, but not enough to read
-// as a person taking a breath between sentences. 300ms splices in a real
-// silent gap between sentences (see pipeline.py's
-// _synthesize_with_sentence_pauses) without making multi-sentence slides
-// drag; 0 turns it off and reproduces the old one-breath narration.
-const SENTENCE_PAUSE_MIN = 0;
-const SENTENCE_PAUSE_MAX = 800;
-const SENTENCE_PAUSE_STEP = 50;
-const SENTENCE_PAUSE_DEFAULT = 300;
-
 const GEMINI_API_KEY_URL = "https://aistudio.google.com/app/apikey";
 const POLL_INTERVAL_MS = 2000;
 
@@ -220,7 +209,6 @@ function App() {
   const [bgmFile, setBgmFile] = useState(null);
   const [introFile, setIntroFile] = useState(null);
   const [outroFile, setOutroFile] = useState(null);
-  const [sentencePauseMs, setSentencePauseMs] = useState(SENTENCE_PAUSE_DEFAULT);
   const [customDict, setCustomDict] = useState("");
 
   const [submitting, setSubmitting] = useState(false);
@@ -384,7 +372,6 @@ function App() {
     setBgmFile(null);
     setIntroFile(null);
     setOutroFile(null);
-    setSentencePauseMs(SENTENCE_PAUSE_DEFAULT);
     setCustomDict("");
     setSubmitting(false);
     setScriptPreviewStatus("idle");
@@ -494,7 +481,6 @@ function App() {
     if (bgmFile) form.append("bgm", bgmFile);
     if (introFile) form.append("intro", introFile);
     if (outroFile) form.append("outro", outroFile);
-    form.append("sentence_pause_ms", String(sentencePauseMs));
     if (customDict.trim()) form.append("custom_dict", customDict);
 
     setSubmitting(true);
@@ -633,8 +619,6 @@ function App() {
                 setIntroFile={setIntroFile}
                 outroFile={outroFile}
                 setOutroFile={setOutroFile}
-                sentencePauseMs={sentencePauseMs}
-                setSentencePauseMs={setSentencePauseMs}
                 customDict={customDict}
                 setCustomDict={setCustomDict}
               />
@@ -653,7 +637,6 @@ function App() {
                 resolutionLabel={resolutionLabel}
                 fontSizeLabel={fontSizeLabel}
                 subtitlePositionPercent={subtitlePositionPercent}
-                sentencePauseMs={sentencePauseMs}
                 extras={[
                   logoFile &&
                     `Logo（${LOGO_POSITIONS.find((p) => p.value === logoPosition)?.label}角・${
@@ -1226,8 +1209,6 @@ function ExtrasStep({
   setIntroFile,
   outroFile,
   setOutroFile,
-  sentencePauseMs,
-  setSentencePauseMs,
   customDict,
   setCustomDict,
 }) {
@@ -1263,27 +1244,6 @@ function ExtrasStep({
               </option>
             ))}
           </select>
-        </div>
-
-        <div className="field">
-          <label htmlFor="sentence-pause-range">
-            講稿停頓{" "}
-            <span className="hint">
-              {sentencePauseMs === 0 ? "關閉" : `${sentencePauseMs} 毫秒`}
-            </span>
-          </label>
-          <input
-            id="sentence-pause-range"
-            type="range"
-            min={SENTENCE_PAUSE_MIN}
-            max={SENTENCE_PAUSE_MAX}
-            step={SENTENCE_PAUSE_STEP}
-            value={sentencePauseMs}
-            onChange={(e) => setSentencePauseMs(Number(e.target.value))}
-          />
-          <p className="hint" style={{ margin: "6px 0 0" }}>
-            句子之間插入短暫停頓，講起來更像真人講話的節奏；設為關閉則恢復一口氣唸完整段的舊行為。
-          </p>
         </div>
 
         <div className="field full">
@@ -1600,7 +1560,6 @@ function ReviewStep({
   resolutionLabel,
   fontSizeLabel,
   subtitlePositionPercent,
-  sentencePauseMs,
   extras,
 }) {
   const rows = useMemo(
@@ -1617,7 +1576,6 @@ function ReviewStep({
       ["解析度", resolutionLabel],
       ["字幕大小", fontSizeLabel],
       ["字幕高度", `距離底部 ${subtitlePositionPercent}%`],
-      ["講稿停頓", sentencePauseMs === 0 ? "關閉" : `${sentencePauseMs} 毫秒`],
       ["額外項目", extras.length ? extras.join("、") : "無"],
     ],
     [
@@ -1632,7 +1590,6 @@ function ReviewStep({
       resolutionLabel,
       fontSizeLabel,
       subtitlePositionPercent,
-      sentencePauseMs,
       extras,
     ]
   );
@@ -1728,7 +1685,7 @@ function HelpWidget() {
               <li>
                 <b>進階選項</b>
                 <span>
-                  Logo、背景音樂、片頭尾、字幕大小與高度、講稿停頓、自訂詞庫，全部選填，不設定也沒關係。
+                  Logo、背景音樂、片頭尾、字幕大小與高度、自訂詞庫，全部選填，不設定也沒關係。
                 </span>
               </li>
               <li>
