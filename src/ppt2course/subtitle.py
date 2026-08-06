@@ -79,6 +79,33 @@ def strip_cue_punctuation(text: str) -> str:
     return text
 
 
+_SPEAKABLE_CONTENT_PATTERN = re.compile(r"\w")
+
+
+def _merge_unspeakable_fragments(parts: list[str]) -> list[str]:
+    """Consecutive terminal punctuation ("太棒了！！" or "結束。。。") makes the
+    tier-1 split emit a fragment that's punctuation only — edge-tts
+    reliably fails ("No audio was received") when asked to synthesize one
+    of those alone, since there's nothing to actually speak. Folding it
+    into an adjacent sentence keeps the punctuation (and its pacing) in
+    the narration without ever handing edge-tts a call with no real
+    content to say."""
+    merged: list[str] = []
+    for part in parts:
+        if merged and not _SPEAKABLE_CONTENT_PATTERN.search(part):
+            merged[-1] += part
+        else:
+            merged.append(part)
+
+    # A leading punctuation-only fragment (text starting with punctuation)
+    # has no earlier sentence to fold into — attach it to the front of
+    # whatever comes next instead.
+    if len(merged) >= 2 and not _SPEAKABLE_CONTENT_PATTERN.search(merged[0]):
+        merged = [merged[0] + merged[1]] + merged[2:]
+
+    return merged
+
+
 def split_into_sentences(text: str) -> list[str]:
     """Splits at sentence-ending punctuation (。！？!?, plus a closing
     quote/bracket immediately after one — reusing the cue splitter's tier-1
@@ -87,8 +114,11 @@ def split_into_sentences(text: str) -> list[str]:
     breaks or quote-pairing protection, since it's used to decide where
     edge-tts synthesizes separate audio segments for STEP3's natural
     inter-sentence pause (see pipeline.py) — a quote spanning a sentence
-    boundary is still a perfectly fine place to take a breath."""
-    return [s for s in _TIER1_PATTERN.split(text or "") if s.strip()]
+    boundary is still a perfectly fine place to take a breath. Every
+    returned piece is guaranteed to have real (non-punctuation) content —
+    see _merge_unspeakable_fragments."""
+    parts = [s for s in _TIER1_PATTERN.split(text or "") if s.strip()]
+    return _merge_unspeakable_fragments(parts)
 
 
 def _phrase_spans(text: str) -> list[tuple[int, int]]:

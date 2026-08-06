@@ -134,6 +134,38 @@ def test_split_into_sentences_drops_empty_and_whitespace_only_pieces():
     assert split_into_sentences("你好。") == ["你好。"]
 
 
+def test_split_into_sentences_merges_punctuation_only_fragment_into_previous():
+    # Consecutive terminal punctuation ("！！") makes the tier-1 split emit
+    # a standalone "！" fragment with no actual words in it — edge-tts
+    # reliably fails to synthesize that on its own ("No audio was
+    # received"), so it must never come out as its own list entry.
+    assert split_into_sentences("太棒了！！大家要好好加油。") == ["太棒了！！", "大家要好好加油。"]
+    assert split_into_sentences("結束。。。") == ["結束。。。"]
+    assert split_into_sentences("真的嗎？？沒問題的。") == ["真的嗎？？", "沒問題的。"]
+
+
+def test_split_into_sentences_merges_leading_punctuation_only_fragment_forward():
+    # No earlier sentence exists to fold a leading punctuation-only
+    # fragment into, so it must attach to the front of whatever follows
+    # instead of surviving as its own entry.
+    assert split_into_sentences("！你好，大家好。") == ["！你好，大家好。"]
+
+
+def test_split_into_sentences_every_returned_piece_has_real_content():
+    import re
+
+    samples = [
+        "太棒了！！大家要好好加油。",
+        "這是重點：「安全第一」！！",
+        "結束。。。",
+        "真的嗎？？沒問題的。",
+        "！你好。",
+    ]
+    for text in samples:
+        for sentence in split_into_sentences(text):
+            assert re.search(r"\w", sentence), f"punctuation-only fragment leaked through: {sentence!r}"
+
+
 # ---------- quotation marks: never split a quoted phrase across chunks ----------
 
 
