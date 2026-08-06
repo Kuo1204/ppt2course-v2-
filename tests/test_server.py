@@ -746,6 +746,94 @@ def test_pptx_preview_never_persists_the_uploaded_file(tmp_path):
     assert leftover_pptx == []
 
 
+# ---------- PPTX notes preview (speaker notes for the NOTES script mode) ----------
+# NOTES mode uses each slide's speaker-notes text verbatim as the narration
+# script, but the user has no way to see that text without reopening the
+# deck in PowerPoint. This endpoint parses the already-uploaded .pptx and
+# hands back each slide's notes so the frontend can show it before submit.
+
+
+def test_pptx_notes_returns_notes_text_per_slide():
+    manager = JobManager(pipeline_fn=lambda **kwargs: {}, auto_start=False)
+    app = create_app(job_manager=manager, data_root=None, frontend_dist=None)
+    client = TestClient(app)
+
+    fake_slides = [
+        SlideContent(index=1, text="投影片一", notes="第一頁備忘稿"),
+        SlideContent(index=2, text="投影片二", notes=""),
+        SlideContent(index=3, text="投影片三", notes="第三頁備忘稿"),
+    ]
+    with patch("ppt2course.server.parse_ppt", return_value=fake_slides):
+        response = client.post(
+            "/api/pptx-notes",
+            files={"pptx": ("deck.pptx", io.BytesIO(b"fake-pptx"), "application/octet-stream")},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"notes": ["第一頁備忘稿", "", "第三頁備忘稿"]}
+
+
+def test_pptx_notes_wraps_parse_error_as_400():
+    manager = JobManager(pipeline_fn=lambda **kwargs: {}, auto_start=False)
+    app = create_app(job_manager=manager, data_root=None, frontend_dist=None)
+    client = TestClient(app)
+
+    with patch("ppt2course.server.parse_ppt", side_effect=PptParseError("corrupt file")):
+        response = client.post(
+            "/api/pptx-notes",
+            files={"pptx": ("deck.pptx", io.BytesIO(b"fake-pptx"), "application/octet-stream")},
+        )
+
+    assert response.status_code == 400
+    assert "corrupt file" in response.json()["detail"]
+
+
+def test_pptx_notes_extracts_real_speaker_notes_end_to_end(tmp_path):
+    # No mocking of parse_ppt here: builds an actual .pptx with python-pptx,
+    # posts the real bytes through the HTTP layer, and confirms the notes
+    # that come back are exactly what was typed into the speaker-notes box —
+    # the same real-tool guarantee the rest of this project holds itself to.
+    from pptx import Presentation
+
+    prs = Presentation()
+    slide1 = prs.slides.add_slide(prs.slide_layouts[6])
+    slide1.notes_slide.notes_text_frame.text = "第一頁的備忘稿內容"
+    slide2 = prs.slides.add_slide(prs.slide_layouts[6])  # no notes added
+
+    pptx_path = tmp_path / "real_deck.pptx"
+    prs.save(str(pptx_path))
+
+    manager = JobManager(pipeline_fn=lambda **kwargs: {}, auto_start=False)
+    app = create_app(job_manager=manager, data_root=None, frontend_dist=None)
+    client = TestClient(app)
+
+    with open(pptx_path, "rb") as f:
+        response = client.post(
+            "/api/pptx-notes",
+            files={"pptx": ("real_deck.pptx", f, "application/octet-stream")},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"notes": ["第一頁的備忘稿內容", ""]}
+
+
+def test_pptx_notes_never_persists_the_uploaded_file(tmp_path):
+    data_root = tmp_path / "data"
+    manager = JobManager(pipeline_fn=lambda **kwargs: {}, auto_start=False)
+    app = create_app(job_manager=manager, data_root=str(data_root), frontend_dist=None)
+    client = TestClient(app)
+
+    fake_slides = [SlideContent(index=1, text="投影片一", notes="備忘稿")]
+    with patch("ppt2course.server.parse_ppt", return_value=fake_slides):
+        client.post(
+            "/api/pptx-notes",
+            files={"pptx": ("deck.pptx", io.BytesIO(b"fake-pptx"), "application/octet-stream")},
+        )
+
+    leftover_pptx = list(data_root.rglob("*.pptx")) if data_root.exists() else []
+    assert leftover_pptx == []
+
+
 def test_voice_preview_returns_audio_and_caches_by_voice(tmp_path):
     calls = []
 

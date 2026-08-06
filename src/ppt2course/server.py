@@ -315,6 +315,27 @@ def create_app(
         ]
         return {"thumbnails": data_urls}
 
+    @app.post("/api/pptx-notes")
+    async def pptx_notes(pptx: UploadFile = File(...)):
+        # NOTES mode uses each slide's speaker-notes text verbatim as the
+        # narration script — this lets the user see that text before ever
+        # submitting a job, instead of only finding out what got narrated
+        # after the video is already rendered. Mirrors /api/pptx-preview's
+        # ephemeral-tempfile pattern: nothing from this preview-only call
+        # persists.
+        with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as tmp:
+            tmp.write(await pptx.read())
+            pptx_path = tmp.name
+        try:
+            try:
+                slides = parse_ppt(pptx_path)
+            except PptParseError as exc:
+                raise HTTPException(status_code=400, detail=f"failed to parse PPT: {exc}") from exc
+        finally:
+            os.unlink(pptx_path)
+
+        return {"notes": [slide.notes for slide in slides]}
+
     @app.post("/api/generate-script")
     async def generate_script_preview(
         pptx: UploadFile = File(...),

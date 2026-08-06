@@ -246,6 +246,12 @@ textarea {
   font-family: var(--body);
 }
 
+textarea[readonly] {
+  background: var(--surface);
+  color: var(--text-dim);
+  cursor: default;
+}
+
 input[type="number"] {
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;

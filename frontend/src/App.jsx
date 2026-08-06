@@ -5,6 +5,7 @@ import {
   createJob,
   downloadUrl,
   extractScriptText,
+  fetchPptxNotes,
   fetchPptxPreview,
   fetchVoicePreview,
   generateScriptPreview,
@@ -184,6 +185,9 @@ function App() {
   const [pptxPreviewStatus, setPptxPreviewStatus] = useState("idle"); // idle | loading | done | error
   const [pptxPreviewThumbnails, setPptxPreviewThumbnails] = useState([]);
   const [pptxPreviewError, setPptxPreviewError] = useState(null);
+  const [pptxNotesStatus, setPptxNotesStatus] = useState("idle"); // idle | loading | done | error
+  const [pptxNotes, setPptxNotes] = useState([]);
+  const [pptxNotesError, setPptxNotesError] = useState(null);
   const [imageFiles, setImageFiles] = useState([]);
   const [baseName, setBaseName] = useState("課程");
   const [scriptMode, setScriptMode] = useState("NOTES");
@@ -218,6 +222,7 @@ function App() {
 
   const pollTimerRef = useRef(null);
   const pptxPreviewRequestRef = useRef(0);
+  const pptxNotesRequestRef = useRef(0);
   const thumbUrls = useObjectUrls(imageFiles);
 
   const modeConfig = SCRIPT_MODES.find((m) => m.value === scriptMode);
@@ -294,6 +299,38 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pptxFile]);
 
+  // Speaker notes are a property of the uploaded deck itself, not of the
+  // chosen script mode — fetched right alongside the thumbnails so the
+  // preview is already sitting there the moment the user switches to
+  // "使用投影片備忘稿". Same in-flight-request-guard pattern as above.
+  async function loadPptxNotes(file) {
+    const requestId = ++pptxNotesRequestRef.current;
+    setPptxNotesStatus("loading");
+    setPptxNotesError(null);
+    try {
+      const { notes } = await fetchPptxNotes(file);
+      if (pptxNotesRequestRef.current !== requestId) return;
+      setPptxNotes(notes);
+      setPptxNotesStatus("done");
+    } catch (err) {
+      if (pptxNotesRequestRef.current !== requestId) return;
+      setPptxNotesError(err.message);
+      setPptxNotesStatus("error");
+    }
+  }
+
+  useEffect(() => {
+    if (!pptxFile) {
+      pptxNotesRequestRef.current += 1; // invalidate any in-flight request
+      setPptxNotesStatus("idle");
+      setPptxNotes([]);
+      setPptxNotesError(null);
+      return;
+    }
+    loadPptxNotes(pptxFile);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pptxFile]);
+
   useEffect(() => {
     if (!modeConfig.needsTexts || textInputMode !== "perSlide") return;
     setPerSlideTexts((prev) => imageFiles.map((_, i) => prev[i] || ""));
@@ -349,6 +386,10 @@ function App() {
     setPptxPreviewStatus("idle");
     setPptxPreviewThumbnails([]);
     setPptxPreviewError(null);
+    pptxNotesRequestRef.current += 1; // invalidate any in-flight notes request
+    setPptxNotesStatus("idle");
+    setPptxNotes([]);
+    setPptxNotesError(null);
     setImageFiles([]);
     setBaseName("課程");
     setScriptMode("NOTES");
@@ -578,6 +619,9 @@ function App() {
                 onGeneratePreview={handleGenerateScriptPreview}
                 scriptPreviewStatus={scriptPreviewStatus}
                 scriptPreviewError={scriptPreviewError}
+                pptxNotesStatus={pptxNotesStatus}
+                pptxNotes={pptxNotes}
+                pptxNotesError={pptxNotesError}
               />
             )}
 
@@ -908,8 +952,12 @@ function ScriptStep({
   onGeneratePreview,
   scriptPreviewStatus,
   scriptPreviewError,
+  pptxNotesStatus,
+  pptxNotes,
+  pptxNotesError,
 }) {
   const detectedCount = perSlideTexts.filter((t) => t.trim()).length;
+  const emptyNotesCount = pptxNotes.filter((n) => !n.trim()).length;
   const hasDraftText =
     textInputMode === "paste" ? pasteText.trim().length > 0 : perSlideTexts.some((t) => t.trim());
 
@@ -950,6 +998,44 @@ function ScriptStep({
             <a href={GEMINI_API_KEY_URL} target="_blank" rel="noreferrer" className="hint-link">
               還沒有 Gemini API Key？點此免費申請 →
             </a>
+          </div>
+        )}
+
+        {scriptMode === "NOTES" && (
+          <div className="field full">
+            <label>
+              備忘稿預覽 <span className="hint">— 這就是每一頁實際會唸出來的內容，唸稿前先確認有沒有寫錯</span>
+            </label>
+
+            {pptxNotesStatus === "loading" && (
+              <p className="status-caption">讀取備忘稿中...</p>
+            )}
+
+            {pptxNotesStatus === "error" && (
+              <p className="form-error" style={{ margin: "8px 0 0" }}>{pptxNotesError}</p>
+            )}
+
+            {pptxNotesStatus === "done" && pptxNotes.length > 0 && (
+              <>
+                <div className="per-slide-texts">
+                  {pptxNotes.map((notes, i) => (
+                    <div key={i} className="field">
+                      <label>第 {i + 1} 頁{!notes.trim() && <span className="hint">（沒有備忘稿，這頁會是靜音）</span>}</label>
+                      <textarea rows={2} value={notes} readOnly placeholder="（空白）" />
+                    </div>
+                  ))}
+                </div>
+                {emptyNotesCount > 0 && (
+                  <p className="form-error" style={{ margin: "8px 0 0" }}>
+                    有 {emptyNotesCount} 頁沒有寫備忘稿，這幾頁在影片裡會是靜音畫面。若不是故意的，請回去 PowerPoint 補上備忘稿後重新上傳。
+                  </p>
+                )}
+              </>
+            )}
+
+            {pptxNotesStatus === "done" && pptxNotes.length === 0 && (
+              <p className="status-caption">尚未偵測到投影片，請先在上一步上傳 PPTX 檔案</p>
+            )}
           </div>
         )}
 

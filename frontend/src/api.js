@@ -77,6 +77,24 @@ export async function fetchPptxPreview(pptxFile) {
   return response.json();
 }
 
+export async function fetchPptxNotes(pptxFile) {
+  const form = new FormData();
+  form.append("pptx", pptxFile);
+
+  const response = await fetch(`${API_BASE_URL}/api/pptx-notes`, {
+    method: "POST",
+    headers: NGROK_BYPASS_HEADERS,
+    body: form,
+  });
+
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.detail || `備忘稿預覽失敗 (HTTP ${response.status})`);
+  }
+
+  return response.json();
+}
+
 export async function generateScriptPreview({ pptxFile, scriptMode, geminiApiKey, geminiModel, texts }) {
   const form = new FormData();
   form.append("pptx", pptxFile);
