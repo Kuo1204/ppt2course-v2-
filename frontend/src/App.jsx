@@ -44,12 +44,29 @@ const RESOLUTIONS = [
   { value: "3840x2160", label: "3840 x 2160 (4K)" },
 ];
 
+// Values are reference pixel sizes calibrated against a 1080p frame.
+// ffmpeg/libass burns FontSize as a literal pixel count against the
+// video's actual PlayResY (its real output height) — so a fixed literal
+// value would look proportionally tiny at 4K and oversized at 720p.
+// scaledFontSize() rescales each reference value by the selected output
+// resolution's height so the caption occupies the same fraction of the
+// frame no matter which resolution is chosen. The reference values
+// themselves were picked from a real ffmpeg render: 22px (the old
+// default) only produced ~1.5%-of-frame-height ink — legible in a
+// screenshot crop, but too small once actually played back — so these
+// are calibrated to real, comfortably-readable subtitle proportions
+// (roughly 3%-7% of frame height) instead.
 const FONT_SIZES = [
-  { value: 16, label: "小 (16px)" },
-  { value: 22, label: "中 (22px)" },
-  { value: 30, label: "大 (30px)" },
-  { value: 40, label: "特大 (40px)" },
+  { value: 46, label: "小" },
+  { value: 64, label: "中" },
+  { value: 84, label: "大" },
+  { value: 106, label: "特大" },
 ];
+
+function scaledFontSize(referencePx, resolutionValue) {
+  const height = Number(resolutionValue.split("x")[1]);
+  return Math.max(1, Math.round((referencePx * height) / 1080));
+}
 
 const TRANSITION_DURATIONS = [0, 300, 500, 800, 1000, 1500, 2000];
 
@@ -150,7 +167,10 @@ function App() {
   const voiceLabel = VOICES.find((v) => v.value === voice)?.label;
   const transitionLabel = TRANSITIONS.find((t) => t.value === transition)?.label;
   const resolutionLabel = RESOLUTIONS.find((r) => r.value === resolution)?.label;
-  const fontSizeLabel = FONT_SIZES.find((f) => f.value === fontSize)?.label;
+  const fontSizeOption = FONT_SIZES.find((f) => f.value === fontSize);
+  const fontSizeLabel = fontSizeOption
+    ? `${fontSizeOption.label}（約 ${scaledFontSize(fontSizeOption.value, resolution)}px）`
+    : undefined;
   const usesAiGeneration = scriptMode === "AUTO" || scriptMode === "POLISH";
 
   // A previously-generated preview only reflects the deck/slide-count it was
@@ -386,7 +406,7 @@ function App() {
     form.append("transition_duration_ms", String(transitionDurationMs));
     form.append("resolution_width", width);
     form.append("resolution_height", height);
-    form.append("font_size", String(fontSize));
+    form.append("font_size", String(scaledFontSize(fontSize, resolution)));
     form.append(
       "subtitle_margin_v",
       String(Math.round((Number(height) * subtitlePositionPercent) / 100))
@@ -1139,7 +1159,7 @@ function ExtrasStep({
           >
             {FONT_SIZES.map((f) => (
               <option key={f.value} value={f.value}>
-                {f.label}
+                {f.label}（約 {scaledFontSize(f.value, resolution)}px）
               </option>
             ))}
           </select>
@@ -1167,19 +1187,22 @@ function ExtrasStep({
 }
 
 function SubtitlePositionField({ percent, setPercent, previewImageUrl, fontSize }) {
-  // A literally-proportional preview (fontSize scaled by the real output
-  // resolution's width) was tried first, but a real 16-40px subtitle really
-  // is only a few pixels tall against a 1920px-wide frame — in this ~420px
-  // box that came out to 3-9px, indistinguishable between options and
-  // barely visible. This scale is tuned against the preview box's own
-  // width instead, purely so the four size options read as clearly
-  // different from each other — not a literal scale model of the real
-  // output. cqw ("1% of this box's own rendered width") keeps that
-  // relationship stable across viewport widths.
-  const PREVIEW_FONT_REFERENCE_WIDTH = 420; // matches .subtitle-position-preview's max-width
-  const PREVIEW_FONT_SCALE = 0.72;
-  const previewFontSizeCqw =
-    ((fontSize * PREVIEW_FONT_SCALE) / PREVIEW_FONT_REFERENCE_WIDTH) * 100;
+  // True proportional preview: ffmpeg/libass burns FontSize as a literal
+  // pixel count against the real output's actual height (see
+  // scaledFontSize / DEFAULT_FONT_SIZE), so on the real video the caption's
+  // ink height is (referencePx / 1080) of the frame — the same fraction
+  // regardless of which output resolution is chosen, by design. This
+  // preview box keeps the same 16:9 aspect ratio as every selectable
+  // output resolution, so converting that same fraction into cqw ("1% of
+  // this box's own rendered width") reproduces the real relative size
+  // exactly, with no separate fudge factor: what's shown here is what
+  // actually renders. (An earlier version scaled against the preview
+  // box's width with an arbitrary legibility factor instead of the real
+  // output height — it looked fine in isolation, but didn't match the
+  // real video, which is exactly what caused subtitles to come out much
+  // smaller on screen than the preview suggested.)
+  const PREVIEW_ASPECT_HEIGHT_OVER_WIDTH = 9 / 16;
+  const previewFontSizeCqw = (fontSize / 1080) * PREVIEW_ASPECT_HEIGHT_OVER_WIDTH * 100;
 
   return (
     <div className="field full">

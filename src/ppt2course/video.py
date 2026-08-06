@@ -20,7 +20,14 @@ DEFAULT_TRANSITION = "fade"
 DEFAULT_TRANSITION_DURATION_MS = 500
 DEFAULT_RESOLUTION = (1920, 1080)
 DEFAULT_FPS = 30
-DEFAULT_FONT_SIZE = 22
+# libass burns FontSize as a literal pixel count against the video's real
+# PlayResY (see _subtitle_filter below), so this needs to be sized against
+# an actual 1080p frame, not a nominal "readable-looking px" guess. Real
+# ffmpeg renders measured glyph ink height at ~0.71 * FontSize; 22px only
+# produced ~16px of ink (1.5% of an 1080-tall frame) — noticeably too
+# small to read on an actual video. 64px targets ~4.2% of frame height,
+# in line with typical subtitle sizing.
+DEFAULT_FONT_SIZE = 64
 DEFAULT_LOGO_WIDTH = 160
 DEFAULT_LOGO_MARGIN = 24
 DEFAULT_LOGO_OPACITY = 1.0
