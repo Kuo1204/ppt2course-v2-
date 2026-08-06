@@ -90,11 +90,39 @@ const LOGO_POSITIONS = [
 ];
 const LOGO_POSITION_DEFAULT = "top-right";
 
+// Reference pixel width/margin calibrated against a 1920px-wide baseline
+// frame. ffmpeg's overlay filter (video.py's _add_logo_overlay) takes both
+// as literal pixel counts against the real output resolution, so without
+// scaling, the same literal values would look proportionally tiny at 4K
+// and comparatively huge at 720p — the same class of bug fixed for
+// subtitle font size earlier. scaledLogoWidth/scaledLogoMargin rescale
+// both by the selected output resolution's width so the watermark keeps
+// the same relative size and the same relative distance from the corner
+// no matter which resolution is chosen. 160 matches the old hardcoded
+// logo_width default exactly.
+const LOGO_SIZES = [
+  { value: 100, label: "小" },
+  { value: 160, label: "中" },
+  { value: 240, label: "大" },
+  { value: 340, label: "特大" },
+];
+const LOGO_SIZE_DEFAULT = LOGO_SIZES[1].value;
+const LOGO_MARGIN_REFERENCE = 12; // hugs the corner; see DEFAULT_LOGO_MARGIN in video.py
+
+function scaledLogoWidth(referencePx, resolutionValue) {
+  const width = Number(resolutionValue.split("x")[0]);
+  return Math.max(1, Math.round((referencePx * width) / 1920));
+}
+
+function scaledLogoMargin(resolutionValue) {
+  const width = Number(resolutionValue.split("x")[0]);
+  return Math.max(1, Math.round((LOGO_MARGIN_REFERENCE * width) / 1920));
+}
+
 // Mirrors the backend's ffmpeg overlay=x:y corner placement (video.py's
 // _LOGO_POSITION_OVERLAYS) so the little preview box actually matches
 // where the logo lands in the real video.
-function logoPositionStyle(position) {
-  const edge = "6%";
+function logoPositionStyle(position, edge) {
   switch (position) {
     case "top-left":
       return { top: edge, left: edge };
@@ -188,6 +216,7 @@ function App() {
   const [logoFile, setLogoFile] = useState(null);
   const [logoOpacity, setLogoOpacity] = useState(LOGO_OPACITY_DEFAULT);
   const [logoPosition, setLogoPosition] = useState(LOGO_POSITION_DEFAULT);
+  const [logoSize, setLogoSize] = useState(LOGO_SIZE_DEFAULT);
   const [bgmFile, setBgmFile] = useState(null);
   const [introFile, setIntroFile] = useState(null);
   const [outroFile, setOutroFile] = useState(null);
@@ -351,6 +380,7 @@ function App() {
     setLogoFile(null);
     setLogoOpacity(LOGO_OPACITY_DEFAULT);
     setLogoPosition(LOGO_POSITION_DEFAULT);
+    setLogoSize(LOGO_SIZE_DEFAULT);
     setBgmFile(null);
     setIntroFile(null);
     setOutroFile(null);
@@ -458,6 +488,8 @@ function App() {
       form.append("logo", logoFile);
       form.append("logo_opacity", String(logoOpacity / 100));
       form.append("logo_position", logoPosition);
+      form.append("logo_width", String(scaledLogoWidth(logoSize, resolution)));
+      form.append("logo_margin", String(scaledLogoMargin(resolution)));
     }
     if (bgmFile) form.append("bgm", bgmFile);
     if (introFile) form.append("intro", introFile);
@@ -593,6 +625,8 @@ function App() {
                 setLogoOpacity={setLogoOpacity}
                 logoPosition={logoPosition}
                 setLogoPosition={setLogoPosition}
+                logoSize={logoSize}
+                setLogoSize={setLogoSize}
                 bgmFile={bgmFile}
                 setBgmFile={setBgmFile}
                 introFile={introFile}
@@ -622,7 +656,9 @@ function App() {
                 sentencePauseMs={sentencePauseMs}
                 extras={[
                   logoFile &&
-                    `Logo（${LOGO_POSITIONS.find((p) => p.value === logoPosition)?.label}角・透明度 ${logoOpacity}%）`,
+                    `Logo（${LOGO_POSITIONS.find((p) => p.value === logoPosition)?.label}角・${
+                      LOGO_SIZES.find((s) => s.value === logoSize)?.label
+                    }・透明度 ${logoOpacity}%）`,
                   bgmFile && "背景音樂",
                   introFile && "片頭",
                   outroFile && "片尾",
@@ -1182,6 +1218,8 @@ function ExtrasStep({
   setLogoOpacity,
   logoPosition,
   setLogoPosition,
+  logoSize,
+  setLogoSize,
   bgmFile,
   setBgmFile,
   introFile,
@@ -1276,6 +1314,9 @@ function ExtrasStep({
           setOpacity={setLogoOpacity}
           position={logoPosition}
           setPosition={setLogoPosition}
+          size={logoSize}
+          setSize={setLogoSize}
+          resolution={resolution}
           previewImageUrl={previewImageUrl}
         />
         <FileField label="背景音樂" file={bgmFile} onChange={setBgmFile} accept="audio/*" />
@@ -1374,7 +1415,18 @@ function FileField({ label, file, onChange, accept }) {
   );
 }
 
-function LogoField({ file, onChange, opacity, setOpacity, position, setPosition, previewImageUrl }) {
+function LogoField({
+  file,
+  onChange,
+  opacity,
+  setOpacity,
+  position,
+  setPosition,
+  size,
+  setSize,
+  resolution,
+  previewImageUrl,
+}) {
   const [resetKey, setResetKey] = useState(0);
   // `file ? [file] : []` is a fresh array on every render regardless of
   // whether `file` itself changed, so useObjectUrls' effect (keyed on that
@@ -1435,19 +1487,43 @@ function LogoField({ file, onChange, opacity, setOpacity, position, setPosition,
 
       {file && (
         <div className="logo-position-field">
-          <label htmlFor="logo-position-group">Logo 位置</label>
-          <div id="logo-position-group" className="logo-position-grid" role="group" aria-label="Logo 位置">
-            {LOGO_POSITIONS.map((p) => (
-              <button
-                key={p.value}
-                type="button"
-                className={`logo-position-btn${position === p.value ? " active" : ""}`}
-                aria-pressed={position === p.value}
-                onClick={() => setPosition(p.value)}
+          <div className="field-grid" style={{ marginBottom: 12 }}>
+            <div className="field">
+              <label htmlFor="logo-size-select">Logo 大小</label>
+              <select
+                id="logo-size-select"
+                value={size}
+                onChange={(e) => setSize(Number(e.target.value))}
               >
-                {p.label}
-              </button>
-            ))}
+                {LOGO_SIZES.map((s) => (
+                  <option key={s.value} value={s.value}>
+                    {s.label}（約 {scaledLogoWidth(s.value, resolution)}px 寬）
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="field">
+              <label htmlFor="logo-position-group">Logo 位置</label>
+              <div
+                id="logo-position-group"
+                className="logo-position-grid"
+                role="group"
+                aria-label="Logo 位置"
+              >
+                {LOGO_POSITIONS.map((p) => (
+                  <button
+                    key={p.value}
+                    type="button"
+                    className={`logo-position-btn${position === p.value ? " active" : ""}`}
+                    aria-pressed={position === p.value}
+                    onClick={() => setPosition(p.value)}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
 
           <div
@@ -1458,13 +1534,17 @@ function LogoField({ file, onChange, opacity, setOpacity, position, setPosition,
               className="logo-position-preview-logo"
               src={previewUrl}
               alt=""
-              style={{ ...logoPositionStyle(position), opacity: opacity / 100 }}
+              style={{
+                ...logoPositionStyle(position, `${(LOGO_MARGIN_REFERENCE / 1920) * 100}cqw`),
+                width: `${(size / 1920) * 100}cqw`,
+                opacity: opacity / 100,
+              }}
             />
           </div>
           <p className="hint" style={{ margin: "6px 0 0" }}>
             {previewImageUrl
-              ? "位置按實際畫面比例預覽"
-              : "先在 Step 01 上傳投影片圖片，這裡就會用實際畫面預覽 Logo 位置"}
+              ? "大小、位置皆按實際畫面比例預覽"
+              : "先在 Step 01 上傳投影片圖片，這裡就會用實際畫面預覽 Logo 大小與位置"}
           </p>
         </div>
       )}

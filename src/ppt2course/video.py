@@ -30,7 +30,13 @@ DEFAULT_FPS = 30
 # in line with typical subtitle sizing.
 DEFAULT_FONT_SIZE = 64
 DEFAULT_LOGO_WIDTH = 160
-DEFAULT_LOGO_MARGIN = 24
+# Tightened from an earlier 24px: at a 1920-wide frame that read as a
+# visibly bigger gap from the corner than a watermark should have,
+# especially since the frontend never actually scaled either value by the
+# selected output resolution before sending them (see scaledLogoWidth /
+# scaledLogoMargin in App.jsx) — a flat 24px also became proportionally
+# almost invisible at 4K and comparatively roomy at 720p.
+DEFAULT_LOGO_MARGIN = 12
 DEFAULT_LOGO_OPACITY = 1.0
 DEFAULT_LOGO_POSITION = "top-right"
 DEFAULT_BGM_VOLUME = 0.2

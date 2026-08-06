@@ -458,12 +458,18 @@ input[type="range"] {
     center / cover no-repeat;
   background-size: cover;
   background-position: center;
+  /* Lets the logo size itself in cqw ("% of this box's own rendered
+     width") so both its size and its distance from the corner stay
+     proportionally correct — matching the real overlay, which sizes both
+     as literal pixels against the actual output resolution — no matter
+     how wide this box actually renders at. */
+  container-type: inline-size;
 }
 
 .logo-position-preview-logo {
   position: absolute;
-  width: 18%;
-  max-height: 40%;
+  height: auto;
+  max-height: 60%;
   object-fit: contain;
   filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.5));
 }

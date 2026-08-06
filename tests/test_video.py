@@ -603,6 +603,7 @@ def test_compose_video_forwards_logo_position_to_overlay_filter(tmp_path):
                         str(tmp_path / "out.srt"),
                         logo_path="logo.png",
                         logo_position="bottom-left",
+                        logo_margin=24,
                     )
 
     logo_call = next(c for c in mock_run.call_args_list if "logo.png" in c[0][0])
