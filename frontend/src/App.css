@@ -35,14 +35,6 @@
   flex-shrink: 0;
 }
 
-.wordmark .sub {
-  font-weight: 400;
-  text-transform: none;
-  letter-spacing: normal;
-  color: var(--text-dim);
-  font-size: 13px;
-}
-
 .tagline {
   font-size: 13px;
   color: var(--text-dim);

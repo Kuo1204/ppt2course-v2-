@@ -487,9 +487,9 @@ function App() {
       <header className="masthead">
         <p className="wordmark">
           <span className="sprocket" aria-hidden="true" />
-          PPT2Course <span className="sub">AI</span>
+          PPT2Course
         </p>
-        <p className="tagline">把 PowerPoint 投影片轉成有旁白、有字幕的課程影片</p>
+        <p className="tagline">把PPT轉成有旁白、有字幕的課程影片</p>
       </header>
 
       {jobId ? (
