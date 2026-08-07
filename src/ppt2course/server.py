@@ -237,12 +237,26 @@ def create_app(
             raise HTTPException(status_code=404, detail="job not found")
 
         if job.status is JobStatus.DONE:
+            generation_seconds = None
+            if job.started_at is not None and job.completed_at is not None:
+                generation_seconds = round(job.completed_at - job.started_at, 1)
             return {
                 "status": "done",
                 "downloads": {
                     filetype: f"/api/jobs/{job_id}/download/{filetype}"
                     for filetype in job.result
                     if filetype in ALLOWED_DOWNLOAD_TYPES
+                },
+                # 影片容量/時長/講稿字數/生成時間長 — shown on the results
+                # screen once a job finishes. The first three come straight
+                # from run_pipeline's result (see pipeline.py); generation
+                # time is Job.started_at -> completed_at, i.e. actual
+                # processing time, not time spent waiting in the queue.
+                "details": {
+                    "video_size_bytes": job.result.get("video_size_bytes"),
+                    "video_duration_ms": job.result.get("video_duration_ms"),
+                    "script_char_count": job.result.get("script_char_count"),
+                    "generation_seconds": generation_seconds,
                 },
             }
         if job.status is JobStatus.ERROR:

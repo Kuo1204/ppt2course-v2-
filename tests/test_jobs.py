@@ -52,6 +52,32 @@ def test_process_next_runs_pipeline_and_marks_done():
     assert calls == [{"work_dir": "w", "out_dir": "o", "base_name": "課程"}]
 
 
+def test_process_next_records_started_at_before_running_pipeline():
+    # "生成時間長" on the results screen is completed_at - started_at, not
+    # created_at (submission time) - started_at, so it reflects actual
+    # processing time rather than time spent waiting in the queue.
+    seen_started_at = []
+
+    def fake_pipeline(**kwargs):
+        seen_started_at.append(manager.get(job_id).started_at)
+        return {"mp4": "a"}
+
+    manager = _make_manager(pipeline_fn=fake_pipeline)
+    job_id = manager.submit(work_dir="w", out_dir="o")
+
+    before = time.time()
+    manager.process_next()
+    after = time.time()
+
+    job = manager.get(job_id)
+    assert job.started_at is not None
+    assert before <= job.started_at <= after
+    assert job.started_at <= job.completed_at
+    # started_at must already be set by the time the pipeline itself runs,
+    # not backfilled afterwards
+    assert seen_started_at == [job.started_at]
+
+
 def test_process_next_marks_error_on_pipeline_error():
     def failing_pipeline(**kwargs):
         raise PipelineError("script generation failed: slide 2")

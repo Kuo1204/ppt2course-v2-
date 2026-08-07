@@ -35,6 +35,7 @@ class Job:
     created_at: float
     work_dir: str
     out_dir: str
+    started_at: float | None = None
     completed_at: float | None = None
     result: dict | None = None
     error: str | None = None
@@ -91,6 +92,11 @@ class JobManager:
         with self._lock:
             job = self._jobs[job_id]
             job.status = JobStatus.RUNNING
+            # Marks when processing actually began, not when it was
+            # submitted — "生成時間長" (completed_at - started_at) should
+            # reflect real generation time, not time spent waiting behind
+            # other jobs in the single-worker queue.
+            job.started_at = time.time()
             kwargs = job.kwargs
 
         try:

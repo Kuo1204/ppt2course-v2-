@@ -1149,6 +1149,35 @@ input[type="range"] {
   font-weight: 700;
 }
 
+.job-details {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 14px;
+  margin: 16px 0 0;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+
+.job-details .stat {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.job-details dt {
+  font-size: 11px;
+  color: var(--text-dim);
+  letter-spacing: 0.03em;
+}
+
+.job-details dd {
+  margin: 0;
+  font-family: var(--mono);
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
 .qr-block {
   display: flex;
   align-items: center;

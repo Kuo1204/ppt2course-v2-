@@ -93,6 +93,15 @@ def test_run_pipeline_end_to_end_with_real_pptx_ffmpeg_and_edge_tts(tmp_path):
     assert "大家好" in srt_text
     assert "謝謝大家" in srt_text
 
+    # 影片容量/時長/講稿字數 — surfaced on the results screen once a job
+    # finishes. Measured against the real exported mp4, not mocked.
+    assert result["video_size_bytes"] == os.path.getsize(result["mp4"])
+    assert result["video_size_bytes"] > 0
+    assert result["video_duration_ms"] > 0
+    assert result["script_char_count"] == len("大家好，歡迎來到本次課程。") + len(
+        "今天的課程就到這裡，謝謝大家。"
+    )
+
     # intermediate per-slide audio files should be left in work_dir (not cleaned up)
     assert os.path.exists(os.path.join(work_dir, "slide_001.mp3"))
     assert os.path.exists(os.path.join(work_dir, "slide_002.mp3"))

@@ -156,6 +156,30 @@ function formatPercent(n) {
   return `${n >= 0 ? "+" : ""}${n}%`;
 }
 
+// Results-screen "產出細節" formatting — all three take null gracefully
+// (an older/mocked job result may not carry these fields) and show an
+// em-dash rather than "undefined" or "NaN".
+function formatFileSizeMb(bytes) {
+  if (bytes == null) return "—";
+  const mb = bytes / (1024 * 1024);
+  return mb < 1 ? `${Math.round(bytes / 1024)} KB` : `${mb.toFixed(1)} MB`;
+}
+
+function formatDurationMs(ms) {
+  if (ms == null) return "—";
+  const totalSeconds = Math.round(ms / 1000);
+  const m = Math.floor(totalSeconds / 60);
+  const s = totalSeconds % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function formatGenerationSeconds(seconds) {
+  if (seconds == null) return "—";
+  const total = Math.round(seconds);
+  if (total < 60) return `${total} 秒`;
+  return `${Math.floor(total / 60)} 分 ${total % 60} 秒`;
+}
+
 function toAbsoluteUrl(path) {
   return resolveDownloadUrl(path, window.location.hostname, window.location.origin);
 }
@@ -1854,6 +1878,32 @@ function StatusView({ jobId, jobStatus, isRunning, isDone, isError, onReset }) {
               </a>
             ))}
           </div>
+
+          {jobStatus.details && (
+            <dl className="job-details">
+              <div className="stat">
+                <dt>影片容量</dt>
+                <dd>{formatFileSizeMb(jobStatus.details.video_size_bytes)}</dd>
+              </div>
+              <div className="stat">
+                <dt>影片時長</dt>
+                <dd>{formatDurationMs(jobStatus.details.video_duration_ms)}</dd>
+              </div>
+              <div className="stat">
+                <dt>講稿字數</dt>
+                <dd>
+                  {jobStatus.details.script_char_count == null
+                    ? "—"
+                    : `${jobStatus.details.script_char_count} 字`}
+                </dd>
+              </div>
+              <div className="stat">
+                <dt>生成耗時</dt>
+                <dd>{formatGenerationSeconds(jobStatus.details.generation_seconds)}</dd>
+              </div>
+            </dl>
+          )}
+
           {jobStatus.downloads.mp4 && <MobileDownloadQr jobId={jobId} />}
         </>
       )}

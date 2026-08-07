@@ -252,6 +252,35 @@ def test_get_job_status_done_includes_download_links(tmp_path):
     }
 
 
+def test_get_job_status_done_includes_video_and_script_details(tmp_path):
+    def fake_pipeline(**kwargs):
+        return {
+            "mp4": "課程.mp4",
+            "srt": "課程.srt",
+            "docx": "課程.docx",
+            "video_size_bytes": 5_242_880,
+            "video_duration_ms": 65_000,
+            "script_char_count": 812,
+        }
+
+    client, manager = _make_client(fake_pipeline, tmp_path)
+    job_id = client.post("/api/jobs", data=_upload_form(), files=_upload_files()).json()["job_id"]
+    manager.process_next()
+
+    response = client.get(f"/api/jobs/{job_id}")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["details"]["video_size_bytes"] == 5_242_880
+    assert body["details"]["video_duration_ms"] == 65_000
+    assert body["details"]["script_char_count"] == 812
+    # generation_seconds is derived from Job.started_at/completed_at, which
+    # process_next() sets to real wall-clock times around the (instant, in
+    # this test) fake pipeline call — must be a small non-negative number,
+    # not None and not the actual seconds since epoch.
+    assert isinstance(body["details"]["generation_seconds"], (int, float))
+    assert 0 <= body["details"]["generation_seconds"] < 5
+
+
 def test_get_job_status_error_includes_message(tmp_path):
     def failing_pipeline(**kwargs):
         raise PipelineError("TTS synthesis failed for slide 1: network error")

@@ -9,6 +9,7 @@ falling back to a partial result — consistent with every module's own
 import os
 import subprocess
 
+from ppt2course.audio_duration import get_audio_duration_ms
 from ppt2course.export import ExportError, export_outputs
 from ppt2course.script_cleaner import clean_script
 from ppt2course.script_gen import (
@@ -85,7 +86,7 @@ def run_pipeline(
     intro_path: str | None = None,
     outro_path: str | None = None,
     custom_dict_path: str | None = None,
-) -> dict[str, str]:
+) -> dict[str, str | int]:
     try:
         slides = parse_ppt(pptx_path)
     except PptParseError as exc:
@@ -155,6 +156,14 @@ def run_pipeline(
         raise PipelineError(f"video composition failed: {exc}") from exc
 
     try:
-        return export_outputs(video_path, srt_path, cleaned_scripts, out_dir, base_name)
+        outputs = export_outputs(video_path, srt_path, cleaned_scripts, out_dir, base_name)
     except ExportError as exc:
         raise PipelineError(f"export failed: {exc}") from exc
+
+    # Surfaced on the results screen ("影片容量/時長/講稿字數") once the job
+    # is done — measured off the actual exported mp4 (not the work_dir copy)
+    # so this always matches what the user is about to download.
+    outputs["video_size_bytes"] = os.path.getsize(outputs["mp4"])
+    outputs["video_duration_ms"] = get_audio_duration_ms(outputs["mp4"])
+    outputs["script_char_count"] = sum(len(s) for s in cleaned_scripts)
+    return outputs
