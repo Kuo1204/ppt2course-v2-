@@ -7,12 +7,15 @@ from urllib.parse import quote
 from fastapi.testclient import TestClient
 
 from ppt2course.jobs import JobManager
+from ppt2course.media_search import MediaSearchResult
 from ppt2course.pipeline import PipelineError
 from ppt2course.pptx_preview import PptxPreviewError
 from ppt2course.script_gen import ScriptGenerationError, ScriptMode
 from ppt2course.server import create_app
+from ppt2course.timeline_models import VisualAsset, VisualAssetType, VisualRecommendation
 from ppt2course.tts import TtsError
 from ppt2course.upload import PptParseError, SlideContent
+from ppt2course.visual_analyzer import VisualAnalysisResult
 
 
 def _make_client(pipeline_fn, tmp_path):
@@ -712,6 +715,216 @@ def test_generate_script_preview_never_stores_the_api_key(tmp_path):
                 files={"pptx": ("deck.pptx", io.BytesIO(b"fake-pptx"), "application/octet-stream")},
             )
     assert "super-secret-key" not in response.text
+
+
+# ---------- AI visual-need analysis (preview-only, never touches compose_video) ----------
+# Mirrors /api/generate-script's contract: runs synchronously, nothing is
+# persisted, and a Gemini/parse failure surfaces as an HTTP error here rather
+# than ever being allowed to fail a whole video job.
+
+
+def test_analyze_visuals_returns_recommendations(tmp_path):
+    manager = JobManager(pipeline_fn=lambda **kwargs: {}, auto_start=False)
+    app = create_app(job_manager=manager, data_root=str(tmp_path / "data"), frontend_dist=None)
+    client = TestClient(app)
+
+    fake_slides = [SlideContent(index=1, text="投影片一", notes="")]
+    fake_result = VisualAnalysisResult(
+        recommendations=(
+            VisualRecommendation(
+                slide_number=1,
+                title="職場孤立",
+                visual_need_score=82,
+                recommended=True,
+                reason="抽象概念適合搭配情境圖片",
+                visual_type=VisualAssetType.IMAGE,
+                keywords=("employee isolation",),
+                suggested_position="during_slide",
+            ),
+        ),
+        used_ai=True,
+    )
+    with patch("ppt2course.server.parse_ppt", return_value=fake_slides):
+        with patch(
+            "ppt2course.server.analyze_visual_needs", return_value=fake_result
+        ) as mock_analyze:
+            response = client.post(
+                "/api/analyze-visuals",
+                data={"texts": json.dumps(["講稿一"]), "gemini_api_key": "secret-key"},
+                files={"pptx": ("deck.pptx", io.BytesIO(b"fake-pptx"), "application/octet-stream")},
+            )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["used_ai"] is True
+    assert body["warnings"] == []
+    assert body["recommendations"] == [
+        {
+            "slide_number": 1,
+            "title": "職場孤立",
+            "visual_need_score": 82,
+            "recommended": True,
+            "reason": "抽象概念適合搭配情境圖片",
+            "visual_type": "image",
+            "keywords": ["employee isolation"],
+            "suggested_position": "during_slide",
+        }
+    ]
+    assert mock_analyze.call_args.kwargs["api_key"] == "secret-key"
+
+
+def test_analyze_visuals_rejects_mismatched_texts_length(tmp_path):
+    manager = JobManager(pipeline_fn=lambda **kwargs: {}, auto_start=False)
+    app = create_app(job_manager=manager, data_root=str(tmp_path / "data"), frontend_dist=None)
+    client = TestClient(app)
+
+    fake_slides = [
+        SlideContent(index=1, text="投影片一", notes=""),
+        SlideContent(index=2, text="投影片二", notes=""),
+    ]
+    with patch("ppt2course.server.parse_ppt", return_value=fake_slides):
+        response = client.post(
+            "/api/analyze-visuals",
+            data={"texts": json.dumps(["只有一段講稿"])},
+            files={"pptx": ("deck.pptx", io.BytesIO(b"fake-pptx"), "application/octet-stream")},
+        )
+
+    assert response.status_code == 400
+
+
+def test_analyze_visuals_wraps_ppt_parse_error(tmp_path):
+    manager = JobManager(pipeline_fn=lambda **kwargs: {}, auto_start=False)
+    app = create_app(job_manager=manager, data_root=str(tmp_path / "data"), frontend_dist=None)
+    client = TestClient(app)
+
+    with patch("ppt2course.server.parse_ppt", side_effect=PptParseError("bad pptx")):
+        response = client.post(
+            "/api/analyze-visuals",
+            data={"texts": json.dumps([])},
+            files={"pptx": ("deck.pptx", io.BytesIO(b"fake-pptx"), "application/octet-stream")},
+        )
+
+    assert response.status_code == 400
+    assert "bad pptx" in response.json()["detail"]
+
+
+def test_analyze_visuals_never_echoes_the_api_key(tmp_path):
+    manager = JobManager(pipeline_fn=lambda **kwargs: {}, auto_start=False)
+    app = create_app(job_manager=manager, data_root=str(tmp_path / "data"), frontend_dist=None)
+    client = TestClient(app)
+
+    fake_slides = [SlideContent(index=1, text="投影片一", notes="")]
+    fake_result = VisualAnalysisResult(recommendations=(), warnings=("Gemini API Key 未設定，已使用本機規則產生建議。",))
+    with patch("ppt2course.server.parse_ppt", return_value=fake_slides):
+        with patch("ppt2course.server.analyze_visual_needs", return_value=fake_result):
+            response = client.post(
+                "/api/analyze-visuals",
+                data={"texts": json.dumps(["講稿一"]), "gemini_api_key": "super-secret-key"},
+                files={"pptx": ("deck.pptx", io.BytesIO(b"fake-pptx"), "application/octet-stream")},
+            )
+
+    assert response.status_code == 200
+    assert "super-secret-key" not in response.text
+    assert response.json()["warnings"] == ["Gemini API Key 未設定，已使用本機規則產生建議。"]
+
+
+# ---------- Pexels media search (optional, never fails the video job) ----------
+
+
+def test_media_search_returns_assets(tmp_path):
+    manager = JobManager(pipeline_fn=lambda **kwargs: {}, auto_start=False)
+    app = create_app(job_manager=manager, data_root=str(tmp_path / "data"), frontend_dist=None)
+    client = TestClient(app)
+
+    fake_result = MediaSearchResult(
+        assets=(
+            VisualAsset(
+                source="pexels",
+                asset_type=VisualAssetType.IMAGE,
+                preview_url="https://example.com/preview.jpg",
+                download_url="https://example.com/full.jpg",
+                keyword="employee isolation",
+                slide_number=1,
+                photographer="Jane Doe",
+            ),
+        )
+    )
+    with patch("ppt2course.server.search_pexels", return_value=fake_result) as mock_search:
+        response = client.get(
+            "/api/media-search",
+            params={"keyword": "employee isolation", "slide_number": 1},
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["warning"] is None
+    assert body["assets"] == [
+        {
+            "source": "pexels",
+            "asset_type": "image",
+            "preview_url": "https://example.com/preview.jpg",
+            "download_url": "https://example.com/full.jpg",
+            "keyword": "employee isolation",
+            "slide_number": 1,
+            "photographer": "Jane Doe",
+            "local_path": None,
+        }
+    ]
+    assert mock_search.call_args.args[0] == "employee isolation"
+    assert mock_search.call_args.args[1] == 1
+
+
+def test_media_search_returns_warning_without_error_status(tmp_path):
+    manager = JobManager(pipeline_fn=lambda **kwargs: {}, auto_start=False)
+    app = create_app(job_manager=manager, data_root=str(tmp_path / "data"), frontend_dist=None)
+    client = TestClient(app)
+
+    fake_result = MediaSearchResult(warning="Pexels API Key 未設定，無法搜尋免費素材。")
+    with patch("ppt2course.server.search_pexels", return_value=fake_result):
+        response = client.get(
+            "/api/media-search",
+            params={"keyword": "employee isolation", "slide_number": 1},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"assets": [], "warning": "Pexels API Key 未設定，無法搜尋免費素材。"}
+
+
+def test_media_search_rejects_invalid_media_type(tmp_path):
+    manager = JobManager(pipeline_fn=lambda **kwargs: {}, auto_start=False)
+    app = create_app(job_manager=manager, data_root=str(tmp_path / "data"), frontend_dist=None)
+    client = TestClient(app)
+
+    response = client.get(
+        "/api/media-search",
+        params={"keyword": "x", "slide_number": 1, "media_type": "gif"},
+    )
+
+    assert response.status_code == 400
+
+
+def test_media_search_forwards_optional_api_key_and_limit(tmp_path):
+    manager = JobManager(pipeline_fn=lambda **kwargs: {}, auto_start=False)
+    app = create_app(job_manager=manager, data_root=str(tmp_path / "data"), frontend_dist=None)
+    client = TestClient(app)
+
+    with patch(
+        "ppt2course.server.search_pexels", return_value=MediaSearchResult()
+    ) as mock_search:
+        client.get(
+            "/api/media-search",
+            params={
+                "keyword": "office",
+                "slide_number": 3,
+                "media_type": "video",
+                "pexels_api_key": "my-key",
+                "limit": 4,
+            },
+        )
+
+    assert mock_search.call_args.kwargs["api_key"] == "my-key"
+    assert mock_search.call_args.kwargs["limit"] == 4
+    assert mock_search.call_args.kwargs["media_type"] is VisualAssetType.VIDEO
 
 
 # ---------- PPTX preview (real slide thumbnails for the upload step) ----------

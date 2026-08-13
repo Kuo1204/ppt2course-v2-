@@ -15,6 +15,7 @@ import re
 import secrets
 import tempfile
 import uuid
+from dataclasses import asdict
 from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -23,6 +24,7 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from ppt2course.jobs import JobManager, JobStatus
+from ppt2course.media_search import DEFAULT_CANDIDATE_LIMIT, search_pexels
 from ppt2course.pptx_preview import DEFAULT_THUMBNAIL_WIDTH, PptxPreviewError, render_pptx_thumbnails
 from ppt2course.script_extract import ScriptExtractionError, extract_text_from_file
 from ppt2course.script_gen import (
@@ -31,6 +33,7 @@ from ppt2course.script_gen import (
     ScriptMode,
     generate_script,
 )
+from ppt2course.timeline_models import VisualAssetType
 from ppt2course.tts import DEFAULT_RATE, DEFAULT_VOLUME, TtsError, synthesize_preview
 from ppt2course.upload import PptParseError, parse_ppt
 from ppt2course.video import (
@@ -47,6 +50,7 @@ from ppt2course.video import (
     DEFAULT_TRANSITION_DURATION_MS,
     LOGO_POSITIONS,
 )
+from ppt2course.visual_analyzer import DEFAULT_VISUAL_MODEL, analyze_visual_needs
 
 DEFAULT_DATA_ROOT = os.environ.get("PPT2COURSE_DATA_ROOT", "data/jobs")
 # src/ppt2course/server.py -> parents[2] is the project root, where `frontend/` lives.
@@ -393,6 +397,72 @@ def create_app(
             raise HTTPException(status_code=502, detail=f"script generation failed: {exc}") from exc
 
         return {"texts": generated_texts}
+
+    @app.post("/api/analyze-visuals")
+    async def analyze_visuals(
+        pptx: UploadFile = File(...),
+        texts: str = Form(...),
+        gemini_api_key: str | None = Form(None),
+        gemini_model: str = Form(DEFAULT_VISUAL_MODEL),
+    ):
+        # Preview-only, like /api/generate-script: runs the (optional) Gemini
+        # call synchronously and returns advice for the user to accept or
+        # reject. Never touches compose_video — this endpoint cannot change
+        # any job's video/subtitle timing, only suggest slides that might
+        # benefit from an added visual.
+        scripts = json.loads(texts)
+
+        with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as tmp:
+            tmp.write(await pptx.read())
+            pptx_path = tmp.name
+        try:
+            try:
+                slides = parse_ppt(pptx_path)
+            except PptParseError as exc:
+                raise HTTPException(status_code=400, detail=f"failed to parse PPT: {exc}") from exc
+        finally:
+            os.unlink(pptx_path)
+
+        if len(scripts) != len(slides):
+            raise HTTPException(
+                status_code=400,
+                detail=f"texts length ({len(scripts)}) does not match slide count ({len(slides)})",
+            )
+
+        result = analyze_visual_needs(slides, scripts, api_key=gemini_api_key, model=gemini_model)
+        return {
+            "recommendations": [asdict(item) for item in result.recommendations],
+            "warnings": list(result.warnings),
+            "used_ai": result.used_ai,
+        }
+
+    @app.get("/api/media-search")
+    def media_search(
+        keyword: str,
+        slide_number: int,
+        media_type: str = "image",
+        pexels_api_key: str | None = None,
+        limit: int = DEFAULT_CANDIDATE_LIMIT,
+    ):
+        # search_pexels already turns every failure mode (no key, no results,
+        # network/HTTP errors) into a warning instead of raising, so the only
+        # thing this route itself validates is the media_type enum value.
+        try:
+            asset_type = VisualAssetType(media_type)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"invalid media_type: {media_type}")
+
+        result = search_pexels(
+            keyword,
+            slide_number,
+            media_type=asset_type,
+            api_key=pexels_api_key,
+            limit=limit,
+        )
+        return {
+            "assets": [asdict(item) for item in result.assets],
+            "warning": result.warning,
+        }
 
     @app.get("/api/voice-preview/{voice}")
     def voice_preview(voice: str, rate: str = DEFAULT_RATE, volume: str = DEFAULT_VOLUME):
