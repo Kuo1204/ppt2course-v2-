@@ -1,8 +1,9 @@
 """STEP 1: Upload PPT — parse slide text / speaker notes."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from pptx import Presentation
+from pptx.enum.shapes import MSO_SHAPE_TYPE
 from pptx.util import Pt
 
 ROW_TOLERANCE_EMU = Pt(10)
@@ -17,6 +18,11 @@ class SlideContent:
     index: int
     text: str
     notes: str
+    # Excluded from equality so index/text/notes-only callers stay compatible.
+    title: str = field(default="", compare=False)
+    image_count: int = field(default=0, compare=False)
+    has_chart: bool = field(default=False, compare=False)
+    shape_count: int = field(default=0, compare=False)
 
 
 def _shape_text_block(shape) -> str:
@@ -74,6 +80,22 @@ def parse_ppt(path: str) -> list[SlideContent]:
         blocks = _order_shapes_by_position(slide.shapes)
         text = "\n".join(blocks)
         notes = _slide_notes(slide)
-        result.append(SlideContent(index=index, text=text, notes=notes))
+        title_shape = slide.shapes.title
+        title = _shape_text_block(title_shape) if title_shape is not None else ""
+        image_count = sum(
+            shape.shape_type in (MSO_SHAPE_TYPE.PICTURE, MSO_SHAPE_TYPE.LINKED_PICTURE)
+            for shape in slide.shapes
+        )
+        result.append(
+            SlideContent(
+                index=index,
+                text=text,
+                notes=notes,
+                title=title,
+                image_count=image_count,
+                has_chart=any(getattr(shape, "has_chart", False) for shape in slide.shapes),
+                shape_count=len(slide.shapes),
+            )
+        )
 
     return result

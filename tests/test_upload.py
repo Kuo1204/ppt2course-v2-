@@ -148,6 +148,22 @@ def test_extracts_speaker_notes(tmp_path):
     assert result[0].notes == "這是備忘稿"
 
 
+def test_extracts_backward_compatible_visual_metadata(tmp_path):
+    prs = new_presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[5])  # title-only layout
+    slide.shapes.title.text = "案例分析"
+    path = save(prs, tmp_path)
+
+    result = parse_ppt(path)
+
+    assert result[0].title == "案例分析"
+    assert result[0].image_count == 0
+    assert result[0].has_chart is False
+    assert result[0].shape_count >= 1
+    # Metadata does not break legacy equality expectations.
+    assert result[0] == SlideContent(index=1, text="案例分析", notes="")
+
+
 def test_no_notes_slide_returns_empty_string_notes(tmp_path):
     prs = new_presentation()
     slide = add_slide(prs)
