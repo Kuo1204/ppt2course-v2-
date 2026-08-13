@@ -12,6 +12,7 @@ from PIL import Image
 from ppt2course.audio_duration import get_audio_duration_ms
 from ppt2course.tts import synthesize
 from ppt2course.video import (
+    BrollOverlay,
     SlideVideoInput,
     _compute_slide_offsets,
     _effective_transition_ms,
@@ -315,3 +316,71 @@ def test_compose_video_with_a_short_slide_and_max_transition_keeps_subtitles_in_
     expected_total_ms = _total_duration_ms(durations_ms, effective_transition_ms)
     actual_ms = get_audio_duration_ms(out_video)
     assert abs(actual_ms - expected_total_ms) <= 300
+
+
+def test_broll_overlay_swaps_picture_without_moving_audio_or_subtitles_real_ffmpeg(tmp_path):
+    # Real end-to-end proof of the core B-roll promise: the picture changes
+    # during [start_ms, end_ms) and reverts after, while narration audio,
+    # subtitle cues, and total video length are byte-for-byte identical to
+    # the same job with zero B-roll.
+    voice = "zh-TW-HsiaoChenNeural"
+
+    img1 = str(tmp_path / "slide1.png")
+    _make_color_image(img1, "green")
+    broll_img = str(tmp_path / "broll.png")
+    _make_color_image(broll_img, "red")
+
+    audio1 = str(tmp_path / "slide1.mp3")
+    chunks1 = synthesize("這是一段比較長的旁白，用來確認畫面切換的時候聲音完全不受影響。", voice, audio1)
+    duration_ms = get_audio_duration_ms(audio1)
+    assert duration_ms > 2000  # room for a broll window with slack on both sides
+
+    broll_start_ms = 800
+    broll_end_ms = 1600
+
+    def _render(with_broll: bool, name: str) -> tuple[str, str]:
+        broll_overlays = (
+            (BrollOverlay(image_path=broll_img, start_ms=broll_start_ms, end_ms=broll_end_ms),)
+            if with_broll
+            else ()
+        )
+        slide = SlideVideoInput(
+            image_path=img1, audio_path=audio1, chunks=chunks1, broll_overlays=broll_overlays
+        )
+        out_video = str(tmp_path / f"out_{name}.mp4")
+        out_srt = str(tmp_path / f"out_{name}.srt")
+        compose_video([slide], out_video, out_srt, resolution=(640, 480), fps=24)
+        return out_video, out_srt
+
+    video_without, srt_without = _render(False, "without")
+    video_with, srt_with = _render(True, "with")
+
+    # Audio/subtitles: completely unaffected by the B-roll.
+    assert open(srt_without, encoding="utf-8").read() == open(srt_with, encoding="utf-8").read()
+    assert abs(get_audio_duration_ms(video_without) - get_audio_duration_ms(video_with)) <= 50
+
+    def _sample_center(video_path: str, at_seconds: float) -> tuple[int, int, int]:
+        frame_path = str(tmp_path / f"frame_{at_seconds}.png")
+        subprocess.run(
+            ["ffmpeg", "-y", "-ss", str(at_seconds), "-i", video_path, "-frames:v", "1", frame_path],
+            check=True, capture_output=True,
+        )
+        return Image.open(frame_path).convert("RGB").getpixel((320, 240))
+
+    before = _sample_center(video_with, broll_start_ms / 2 / 1000)  # well before the window
+    during = _sample_center(video_with, (broll_start_ms + broll_end_ms) / 2 / 1000)  # mid-window
+    after = _sample_center(video_with, (broll_end_ms + duration_ms) / 2 / 1000)  # after it ends
+
+    # ffmpeg's named "green" is the dim HTML green (0,128,0), not lime, so
+    # these compare channel dominance rather than assuming a bright value.
+    def _is_red(px: tuple[int, int, int]) -> bool:
+        r, g, b = px
+        return r > g + 40 and r > b + 40
+
+    def _is_green(px: tuple[int, int, int]) -> bool:
+        r, g, b = px
+        return g > r + 40 and g > b + 40
+
+    assert _is_green(before)
+    assert _is_red(during)
+    assert _is_green(after)

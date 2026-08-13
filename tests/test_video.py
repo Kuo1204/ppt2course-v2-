@@ -5,6 +5,7 @@ import pytest
 from ppt2course.subtitle import TimedChunk
 from ppt2course.video import (
     MIN_SLIDE_HOLD_MS,
+    BrollOverlay,
     SlideVideoInput,
     VideoComposeError,
     _add_logo_overlay,
@@ -330,6 +331,152 @@ def test_build_ffmpeg_command_custom_subtitle_margin_v():
     filter_complex = cmd[cmd.index("-filter_complex") + 1]
     assert "MarginV=180" in filter_complex
     assert "MarginV=30" not in filter_complex
+
+
+# ---- BrollOverlay / B-roll filter construction ----
+# The core promise: B-roll is a picture swap only. It must never appear in
+# _compute_slide_offsets, _build_cues, or durations_ms — those functions
+# don't even take a SlideVideoInput with broll_overlays into account, so
+# these tests mostly prove the *wiring* (inputs/filters) is correct, while
+# the "audio/subtitles never move" guarantee is structural (see also the
+# real-ffmpeg regression test in test_video_integration.py).
+
+
+def test_broll_overlay_rejects_end_before_start():
+    with pytest.raises(VideoComposeError):
+        BrollOverlay(image_path="b.jpg", start_ms=500, end_ms=500)
+
+
+def test_broll_overlay_rejects_negative_start():
+    with pytest.raises(VideoComposeError):
+        BrollOverlay(image_path="b.jpg", start_ms=-1, end_ms=100)
+
+
+def test_build_ffmpeg_command_with_broll_adds_extra_input_after_all_slides():
+    slide1 = SlideVideoInput(
+        image_path="s1.png",
+        audio_path="a1.mp3",
+        chunks=[TimedChunk("你好", 0, 800)],
+        broll_overlays=(BrollOverlay(image_path="broll.jpg", start_ms=200, end_ms=600),),
+    )
+    slide2 = _slide([TimedChunk("謝謝", 0, 700)])
+    cmd = _build_ffmpeg_command(
+        [slide1, slide2],
+        durations_ms=[2000, 1000],
+        offsets_ms=[0, 1500],
+        srt_path="out.srt",
+        out_video_path="out.mp4",
+        transition="fade",
+        transition_duration_ms=500,
+        resolution=(1920, 1080),
+        fps=30,
+        font_size=64,
+    )
+
+    # Inputs: [0]=slide1 img, [1]=slide2 img, [2]=slide1 audio, [3]=slide2
+    # audio, [4]=broll — the broll is appended last, so slide/audio indices
+    # are exactly what they'd be with zero B-roll.
+    inputs = [cmd[i + 1] for i, arg in enumerate(cmd) if arg == "-i"]
+    assert inputs[:4] == ["s1.png", "img.png", "a1.mp3", "audio.mp3"]
+    assert inputs[4] == "broll.jpg"
+
+    filter_complex = cmd[cmd.index("-filter_complex") + 1]
+    assert "[0:v]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30[v0base]" in filter_complex
+    assert "[4:v]scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,setsar=1,fps=30[v0broll0]" in filter_complex
+    assert "[v0base][v0broll0]overlay=enable='between(t,0.2,0.6)'[v0]" in filter_complex
+    # Downstream xfade must reference plain v0/v1 — unaware B-roll exists.
+    assert "[v0][v1]xfade=transition=fade:duration=0.5:offset=1.5[vout]" in filter_complex
+
+
+def test_build_ffmpeg_command_with_broll_chains_multiple_overlays_on_one_slide():
+    slide = SlideVideoInput(
+        image_path="s1.png",
+        audio_path="a1.mp3",
+        chunks=[TimedChunk("你好", 0, 800)],
+        broll_overlays=(
+            BrollOverlay(image_path="b1.jpg", start_ms=100, end_ms=300),
+            BrollOverlay(image_path="b2.jpg", start_ms=400, end_ms=600),
+        ),
+    )
+    cmd = _build_ffmpeg_command(
+        [slide],
+        durations_ms=[1000],
+        offsets_ms=[0],
+        srt_path="out.srt",
+        out_video_path="out.mp4",
+        transition="fade",
+        transition_duration_ms=500,
+        resolution=(1920, 1080),
+        fps=30,
+        font_size=64,
+    )
+    filter_complex = cmd[cmd.index("-filter_complex") + 1]
+    assert "[v0base][v0broll0]overlay=enable='between(t,0.1,0.3)'[v0mix0]" in filter_complex
+    assert "[v0mix0][v0broll1]overlay=enable='between(t,0.4,0.6)'[v0]" in filter_complex
+
+
+def test_build_ffmpeg_command_without_broll_is_unchanged():
+    # Same slide count/content as the very first structural test, just
+    # re-asserted here as an explicit "no B-roll -> identical command"
+    # regression guard next to the new B-roll tests.
+    slide1 = _slide([TimedChunk("你好", 0, 800)])
+    slide2 = _slide([TimedChunk("謝謝", 0, 700)])
+    cmd = _build_ffmpeg_command(
+        [slide1, slide2],
+        durations_ms=[2000, 1000],
+        offsets_ms=[0, 1500],
+        srt_path="out.srt",
+        out_video_path="out.mp4",
+        transition="fade",
+        transition_duration_ms=500,
+        resolution=(1920, 1080),
+        fps=30,
+        font_size=64,
+    )
+    filter_complex = cmd[cmd.index("-filter_complex") + 1]
+    assert "v0base" not in filter_complex
+    assert "broll" not in filter_complex
+
+
+def test_compose_video_rejects_broll_overlay_past_slides_own_audio_duration(tmp_path):
+    slide = SlideVideoInput(
+        image_path="s1.png",
+        audio_path="a1.mp3",
+        chunks=[TimedChunk("你好", 0, 800)],
+        broll_overlays=(BrollOverlay(image_path="b.jpg", start_ms=500, end_ms=1500),),
+    )
+    with patch("ppt2course.video.shutil.which", return_value="/usr/bin/ffmpeg"):
+        with patch("ppt2course.video.get_audio_duration_ms", return_value=1000):
+            with pytest.raises(VideoComposeError):
+                compose_video([slide], str(tmp_path / "out.mp4"), str(tmp_path / "out.srt"))
+
+
+def test_compose_video_with_broll_produces_identical_srt_to_without_broll(tmp_path):
+    # The single most important B-roll regression: adding a picture swap
+    # must not move a single subtitle timestamp.
+    chunks = [TimedChunk("你好", 0, 800), TimedChunk("。", 800, 800)]
+
+    class FakeResult:
+        returncode = 0
+        stderr = ""
+
+    def _run(with_broll: bool, srt_path):
+        broll_overlays = (
+            (BrollOverlay(image_path="b.jpg", start_ms=100, end_ms=400),) if with_broll else ()
+        )
+        slide = SlideVideoInput(
+            image_path="s1.png", audio_path="a1.mp3", chunks=chunks, broll_overlays=broll_overlays
+        )
+        with patch("ppt2course.video.shutil.which", return_value="/usr/bin/ffmpeg"):
+            with patch("ppt2course.video.get_audio_duration_ms", return_value=1600):
+                with patch("ppt2course.video.subprocess.run", return_value=FakeResult()):
+                    compose_video([slide], str(tmp_path / "out.mp4"), str(srt_path))
+        return srt_path.read_text(encoding="utf-8")
+
+    srt_without = _run(False, tmp_path / "without.srt")
+    srt_with = _run(True, tmp_path / "with.srt")
+
+    assert srt_without == srt_with
 
 
 # ---- compose_video (mocked subprocess) ----

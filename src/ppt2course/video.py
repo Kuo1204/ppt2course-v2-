@@ -65,10 +65,37 @@ class VideoComposeError(Exception):
 
 
 @dataclass(frozen=True)
+class BrollOverlay:
+    """A full-screen visual swap over one slide's own picture, timed against
+    that slide's own audio (0 = the slide's narration start).
+
+    This deliberately carries no reference to the global/offset timeline —
+    ``compose_video`` never reads it when computing ``durations_ms``,
+    offsets, or subtitle cues, so adding, removing, or mistiming an overlay
+    cannot move a single frame of narration, subtitle, or total video
+    duration. It can only change which picture is on screen.
+    """
+
+    image_path: str
+    start_ms: int
+    end_ms: int
+
+    def __post_init__(self) -> None:
+        if self.start_ms < 0 or self.end_ms <= self.start_ms:
+            raise VideoComposeError(
+                f"broll overlay must have 0 <= start_ms < end_ms, got "
+                f"start_ms={self.start_ms} end_ms={self.end_ms}"
+            )
+
+
+@dataclass(frozen=True)
 class SlideVideoInput:
     image_path: str
     audio_path: str
     chunks: list[TimedChunk]
+    # Optional full-screen B-roll swaps layered over this slide's own image.
+    # Empty by default, so every existing caller/test is unaffected.
+    broll_overlays: tuple[BrollOverlay, ...] = ()
 
 
 # The minimum stretch of a slide's own audio that must remain outside any
@@ -168,11 +195,59 @@ def _escape_ffmpeg_filter_path(path: str) -> str:
     return escaped.replace("'", "\\'")
 
 
-def _scale_pad_filter(index: int, width: int, height: int, fps: int) -> str:
+def _scale_pad_filter(
+    index: int, width: int, height: int, fps: int, out_label: str | None = None
+) -> str:
+    label = out_label or f"v{index}"
     return (
         f"[{index}:v]scale={width}:{height}:force_original_aspect_ratio=decrease,"
-        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps}[v{index}]"
+        f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps}[{label}]"
     )
+
+
+def _cover_scale_filter(index: int, out_label: str, width: int, height: int, fps: int) -> str:
+    # "cover" (scale up + crop), not "contain" (_scale_pad_filter's
+    # letterbox behavior) — a B-roll is meant to fully replace the slide's
+    # own picture on screen, so padding bars that left slivers of the
+    # original PPT visible around the edges would defeat the point.
+    return (
+        f"[{index}:v]scale={width}:{height}:force_original_aspect_ratio=increase,"
+        f"crop={width}:{height},setsar=1,fps={fps}[{out_label}]"
+    )
+
+
+def _broll_scale_and_overlay_filters(
+    slide_index: int,
+    overlays: tuple[BrollOverlay, ...],
+    first_input_index: int,
+    width: int,
+    height: int,
+    fps: int,
+) -> list[str]:
+    """Build the filter lines that swap each B-roll over slide ``slide_index``
+    during its own [start_ms, end_ms) window, on top of that slide's already
+    scaled/padded base image (labeled ``v{slide_index}base``).
+
+    Always ends at label ``v{slide_index}`` — the exact label
+    ``_video_xfade_chain`` already expects — so nothing downstream of this
+    (xfade, subtitles, acrossfade) needs to know B-roll exists at all.
+    """
+    parts: list[str] = []
+    prev_label = f"v{slide_index}base"
+    input_index = first_input_index
+    for i, overlay in enumerate(overlays):
+        cover_label = f"v{slide_index}broll{i}"
+        parts.append(_cover_scale_filter(input_index, cover_label, width, height, fps))
+        out_label = f"v{slide_index}" if i == len(overlays) - 1 else f"v{slide_index}mix{i}"
+        start_sec = overlay.start_ms / 1000
+        end_sec = overlay.end_ms / 1000
+        parts.append(
+            f"[{prev_label}][{cover_label}]overlay=enable='between(t,{start_sec},{end_sec})'"
+            f"[{out_label}]"
+        )
+        prev_label = out_label
+        input_index += 1
+    return parts
 
 
 def _audio_label_filter(input_index: int, slide_index: int) -> str:
@@ -270,7 +345,25 @@ def _build_ffmpeg_command(
     for slide in slides:
         cmd += ["-i", slide.audio_path]
 
-    scale_filters = [_scale_pad_filter(i, width, height, fps) for i in range(n)]
+    # B-roll images are appended last, after every slide image (0..n-1) and
+    # every slide audio (n..2n-1) — so those two existing index ranges never
+    # shift, regardless of which slides have B-roll or how many.
+    scale_filters: list[str] = []
+    next_input_index = 2 * n
+    for i, slide in enumerate(slides):
+        if not slide.broll_overlays:
+            scale_filters.append(_scale_pad_filter(i, width, height, fps))
+            continue
+        scale_filters.append(_scale_pad_filter(i, width, height, fps, out_label=f"v{i}base"))
+        for overlay in slide.broll_overlays:
+            cmd += ["-loop", "1", "-t", str(durations_ms[i] / 1000), "-i", overlay.image_path]
+        scale_filters.extend(
+            _broll_scale_and_overlay_filters(
+                i, slide.broll_overlays, next_input_index, width, height, fps
+            )
+        )
+        next_input_index += len(slide.broll_overlays)
+
     audio_label_filters = [_audio_label_filter(n + i, i) for i in range(n)]
     xfade_filter, video_label = _video_xfade_chain(n, transition, transition_duration_ms, offsets_ms)
     audio_filter, audio_label = _audio_acrossfade_chain(n, transition_duration_ms)
@@ -440,6 +533,15 @@ def compose_video(
         raise VideoComposeError("ffmpeg executable not found")
 
     durations_ms = [get_audio_duration_ms(s.audio_path) for s in slides]
+
+    for slide, duration_ms in zip(slides, durations_ms):
+        for overlay in slide.broll_overlays:
+            if overlay.end_ms > duration_ms:
+                raise VideoComposeError(
+                    f"broll overlay [{overlay.start_ms}, {overlay.end_ms}) falls outside "
+                    f"slide's own audio duration (0, {duration_ms})"
+                )
+
     # Reassigned (not a new variable) so every downstream use of
     # transition_duration_ms below — offsets, subtitle cues, and the ffmpeg
     # xfade/acrossfade filters — automatically agrees on the same,
