@@ -473,3 +473,102 @@ def test_avatar_overlay_composites_without_moving_audio_or_subtitles_real_ffmpeg
     assert _is_avatar_blue(during)
     assert _is_green(after)
     assert _is_green(always_green)  # same spot, no avatar at all -> never changes
+
+
+def test_reading_pause_extends_visual_hold_without_moving_narration_or_subtitles_real_ffmpeg(
+    tmp_path,
+):
+    # Real end-to-end proof of the reading-pause promise: the rendered
+    # video is measurably longer with a pause than without, but the SRT
+    # (built from slide.chunks, which know nothing about the pause) is
+    # byte-for-byte identical either way — narration/subtitles never move,
+    # only how long the picture holds afterward.
+    voice = "zh-TW-HsiaoChenNeural"
+    pause_ms = 1500
+
+    img1 = str(tmp_path / "slide1.png")
+    _make_color_image(img1, "green")
+    audio1 = str(tmp_path / "slide1.mp3")
+    chunks1 = synthesize("這是一段用來測試閱讀停頓的旁白。", voice, audio1)
+    narration_ms = get_audio_duration_ms(audio1)
+
+    def _render(pause: int, name: str) -> tuple[str, str]:
+        slide = SlideVideoInput(
+            image_path=img1, audio_path=audio1, chunks=chunks1, reading_pause_ms=pause
+        )
+        out_video = str(tmp_path / f"out_{name}.mp4")
+        out_srt = str(tmp_path / f"out_{name}.srt")
+        compose_video([slide], out_video, out_srt, resolution=(640, 480), fps=24)
+        return out_video, out_srt
+
+    video_without, srt_without = _render(0, "without")
+    video_with, srt_with = _render(pause_ms, "with")
+
+    assert open(srt_without, encoding="utf-8").read() == open(srt_with, encoding="utf-8").read()
+
+    duration_without = get_audio_duration_ms(video_without)
+    duration_with = get_audio_duration_ms(video_with)
+    assert abs(duration_without - narration_ms) <= 100
+    assert abs(duration_with - (narration_ms + pause_ms)) <= 150
+
+    # The *audio stream itself* was padded with silence (apad), not just the
+    # video track held on a freeze frame while audio quietly ended early —
+    # a real player would otherwise drop out of sync visibly. Probed
+    # separately from container duration (which is already asserted above)
+    # to make sure this is really testing the audio stream, not video.
+    def _audio_stream_duration_ms(path: str) -> int:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error", "-select_streams", "a:0",
+                "-show_entries", "stream=duration", "-of", "csv=p=0", path,
+            ],
+            capture_output=True, text=True, check=True,
+        )
+        return round(float(result.stdout.strip()) * 1000)
+
+    audio_stream_ms_with = _audio_stream_duration_ms(video_with)
+    assert abs(audio_stream_ms_with - (narration_ms + pause_ms)) <= 150
+
+
+def test_ken_burns_enabled_still_matches_expected_duration_and_resolution_real_ffmpeg(tmp_path):
+    # Ken Burns replaces the scale/pad chain with zoompan entirely for every
+    # slide — this proves that swap doesn't silently break duration,
+    # resolution, or the master narration/subtitle timeline. The actual
+    # zoom-in-crops-tighter-over-time behavior itself was hand-verified
+    # separately (zoompan is well-established ffmpeg machinery); this test
+    # guards the integration, not the visual effect.
+    voice = "zh-TW-HsiaoChenNeural"
+
+    img1 = str(tmp_path / "slide1.png")
+    img2 = str(tmp_path / "slide2.png")
+    _make_color_image(img1, "red")
+    _make_color_image(img2, "blue")
+    audio1 = str(tmp_path / "slide1.mp3")
+    audio2 = str(tmp_path / "slide2.mp3")
+    chunks1 = synthesize("你好嗎？", voice, audio1)
+    chunks2 = synthesize("我很好，謝謝。", voice, audio2)
+
+    slides = [
+        SlideVideoInput(image_path=img1, audio_path=audio1, chunks=chunks1),
+        SlideVideoInput(image_path=img2, audio_path=audio2, chunks=chunks2),
+    ]
+
+    out_video = str(tmp_path / "out.mp4")
+    out_srt = str(tmp_path / "out.srt")
+    transition_ms = 500
+    durations_ms = [get_audio_duration_ms(audio1), get_audio_duration_ms(audio2)]
+
+    compose_video(
+        slides, out_video, out_srt,
+        resolution=(640, 480), fps=24,
+        transition_duration_ms=transition_ms, enable_ken_burns=True,
+    )
+
+    assert os.path.exists(out_video)
+    expected_total_ms = _total_duration_ms(durations_ms, transition_ms)
+    assert abs(get_audio_duration_ms(out_video) - expected_total_ms) <= 200
+    assert _get_resolution(out_video) == (640, 480)
+
+    srt_text = open(out_srt, encoding="utf-8").read()
+    assert "你好嗎" in srt_text
+    assert "我很好" in srt_text

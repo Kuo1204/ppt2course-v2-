@@ -6,6 +6,7 @@ falling back to a partial result — consistent with every module's own
 "raise, don't fail silently" behavior.
 """
 
+import dataclasses
 import os
 import subprocess
 
@@ -32,6 +33,7 @@ from ppt2course.video import (
     DEFAULT_AVATAR_POSITION,
     DEFAULT_AVATAR_SIZE,
     DEFAULT_BGM_VOLUME,
+    DEFAULT_ENABLE_KEN_BURNS,
     DEFAULT_FONT_SIZE,
     DEFAULT_FPS,
     DEFAULT_LOGO_MARGIN,
@@ -48,6 +50,14 @@ from ppt2course.video import (
     VideoComposeError,
     compose_video,
 )
+
+# Private, but video.py is this pipeline's own rendering engine and these
+# are exactly the formulas that decide "how much total video time do these
+# narration durations actually produce" — reusing them here (rather than
+# re-deriving the same transition-safety/offset math a second time) is what
+# keeps target_duration_ms's estimate from ever silently drifting out of
+# sync with what compose_video will actually render.
+from ppt2course.video import _effective_transition_ms, _total_duration_ms
 
 DEFAULT_SILENT_DURATION_MS = 2000
 
@@ -129,6 +139,38 @@ def _avatar_overlays_for_slide(
         return ()
 
 
+def _reading_pauses_for_target_duration(
+    narration_durations_ms: list[int], transition_duration_ms: int, target_duration_ms: int
+) -> tuple[list[int], bool]:
+    """Decide each slide's reading_pause_ms so the rendered video lands as
+    close as possible to ``target_duration_ms``, using only reading-pause
+    silence — never a TTS rate change, and never shortening any slide's
+    real narration.
+
+    Returns ``(pauses_ms, reachable)``. If the target is shorter than the
+    narration-only length already produces, that length is the floor —
+    ``reachable`` comes back False and every pause is 0 (the closest this
+    can get without cutting into real narration audio).
+    """
+    n = len(narration_durations_ms)
+    if n == 0:
+        return [], True
+
+    effective_transition_ms = _effective_transition_ms(
+        narration_durations_ms, transition_duration_ms
+    )
+    narration_only_total_ms = _total_duration_ms(narration_durations_ms, effective_transition_ms)
+    slack_ms = target_duration_ms - narration_only_total_ms
+
+    if slack_ms <= 0:
+        return [0] * n, slack_ms == 0
+
+    per_slide_ms = slack_ms // n
+    pauses = [per_slide_ms] * n
+    pauses[-1] += slack_ms - per_slide_ms * n  # remainder -> exact target
+    return pauses, True
+
+
 def _generate_silent_audio(out_path: str, duration_ms: int) -> None:
     cmd = [
         "ffmpeg", "-y",
@@ -178,6 +220,10 @@ def run_pipeline(
     avatar_margin: int = DEFAULT_AVATAR_MARGIN,
     avatar_custom_slides: list[int] | None = None,
     avatar_asset_set: AvatarAssetSet | None = None,
+    reading_pause_ms: int = 0,
+    closing_pause_ms: int = 0,
+    target_duration_ms: int | None = None,
+    enable_ken_burns: bool = DEFAULT_ENABLE_KEN_BURNS,
 ) -> dict[str, str | int]:
     try:
         slides = parse_ppt(pptx_path)
@@ -240,6 +286,36 @@ def run_pipeline(
             )
         )
 
+    # Reading pause is purely additive on top of each slide's already-final
+    # audio/chunks/overlays above — nothing about how those were built
+    # changes here, only how long the slide's *picture* (and, via silent
+    # padding inside compose_video, its audio track) holds before the next
+    # slide's transition begins.
+    target_duration_reachable = None
+    if target_duration_ms is not None:
+        # Only this mode needs each slide's real narration length measured
+        # up front (the flat reading_pause_ms/closing_pause_ms path below
+        # needs no such measurement — apad's whole_dur figures the padding
+        # out from the real file at render time) — and only this mode's
+        # explicit reading_pause_ms/closing_pause_ms inputs are overridden
+        # by the auto-computed distribution, so the two levers can't
+        # silently fight each other over the same slide.
+        narration_durations_ms = [get_audio_duration_ms(si.audio_path) for si in slide_inputs]
+        pauses_ms, target_duration_reachable = _reading_pauses_for_target_duration(
+            narration_durations_ms, transition_duration_ms, target_duration_ms
+        )
+        slide_inputs = [
+            dataclasses.replace(si, reading_pause_ms=p) for si, p in zip(slide_inputs, pauses_ms)
+        ]
+    elif reading_pause_ms > 0 or closing_pause_ms > 0:
+        slide_inputs = [
+            dataclasses.replace(
+                si,
+                reading_pause_ms=reading_pause_ms + (closing_pause_ms if i == len(slide_inputs) - 1 else 0),
+            )
+            for i, si in enumerate(slide_inputs)
+        ]
+
     video_path = os.path.join(work_dir, "course.mp4")
     srt_path = os.path.join(work_dir, "course.srt")
 
@@ -267,6 +343,7 @@ def run_pipeline(
             avatar_position=avatar_position,
             avatar_size=avatar_size,
             avatar_margin=avatar_margin,
+            enable_ken_burns=enable_ken_burns,
         )
     except VideoComposeError as exc:
         raise PipelineError(f"video composition failed: {exc}") from exc
@@ -282,4 +359,10 @@ def run_pipeline(
     outputs["video_size_bytes"] = os.path.getsize(outputs["mp4"])
     outputs["video_duration_ms"] = get_audio_duration_ms(outputs["mp4"])
     outputs["script_char_count"] = sum(len(s) for s in cleaned_scripts)
+    if target_duration_reachable is not None:
+        # False means the requested target was shorter than the real
+        # narration-only length already produces — video_duration_ms above
+        # is then the shortest this deck can honestly get without cutting
+        # into narration audio, not the requested target.
+        outputs["target_duration_reachable"] = target_duration_reachable
     return outputs

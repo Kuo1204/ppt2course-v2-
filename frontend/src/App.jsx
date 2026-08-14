@@ -275,6 +275,12 @@ function App() {
   // Set of 1-based slide numbers, only used when avatarMode === "custom".
   const [avatarCustomSlides, setAvatarCustomSlides] = useState([]);
 
+  const [readingPauseSec, setReadingPauseSec] = useState(0);
+  const [closingPauseSec, setClosingPauseSec] = useState(0);
+  const [targetDurationEnabled, setTargetDurationEnabled] = useState(false);
+  const [targetDurationSec, setTargetDurationSec] = useState(120);
+  const [enableKenBurns, setEnableKenBurns] = useState(false);
+
   const [visualAnalysisStatus, setVisualAnalysisStatus] = useState("idle"); // idle | loading | done | error
   const [visualAnalysisError, setVisualAnalysisError] = useState(null);
   const [visualRecommendations, setVisualRecommendations] = useState([]);
@@ -682,6 +688,17 @@ function App() {
       }
     }
 
+    if (targetDurationEnabled) {
+      // Target mode auto-computes reading pauses server-side and ignores
+      // any flat reading_pause_ms/closing_pause_ms, so those are simply
+      // not sent here.
+      form.append("target_duration_ms", String(Math.round(targetDurationSec * 1000)));
+    } else {
+      if (readingPauseSec > 0) form.append("reading_pause_ms", String(Math.round(readingPauseSec * 1000)));
+      if (closingPauseSec > 0) form.append("closing_pause_ms", String(Math.round(closingPauseSec * 1000)));
+    }
+    if (enableKenBurns) form.append("enable_ken_burns", "true");
+
     const confirmedBrollSelections = Object.entries(brollChoices)
       .filter(([, choice]) => choice && choice.asset)
       .map(([slideNumber, choice]) => ({
@@ -844,6 +861,16 @@ function App() {
                 avatarCustomSlides={avatarCustomSlides}
                 setAvatarCustomSlides={setAvatarCustomSlides}
                 slideCount={imageFiles.length}
+                readingPauseSec={readingPauseSec}
+                setReadingPauseSec={setReadingPauseSec}
+                closingPauseSec={closingPauseSec}
+                setClosingPauseSec={setClosingPauseSec}
+                targetDurationEnabled={targetDurationEnabled}
+                setTargetDurationEnabled={setTargetDurationEnabled}
+                targetDurationSec={targetDurationSec}
+                setTargetDurationSec={setTargetDurationSec}
+                enableKenBurns={enableKenBurns}
+                setEnableKenBurns={setEnableKenBurns}
               />
             )}
 
@@ -895,6 +922,13 @@ function App() {
                     `2D 講師 Avatar（${AVATAR_MODES.find((m) => m.value === avatarMode)?.label}・${
                       AVATAR_POSITIONS.find((p) => p.value === avatarPosition)?.label
                     }・${AVATAR_SIZES.find((s) => s.value === avatarSize)?.label}）`,
+                  targetDurationEnabled
+                    ? `目標長度（${formatSecondsAsMinSec(targetDurationSec)}，自動分配停頓）`
+                    : (readingPauseSec > 0 || closingPauseSec > 0) &&
+                      `節奏停頓（每頁 +${readingPauseSec.toFixed(1)}s${
+                        closingPauseSec > 0 ? `・結尾 +${closingPauseSec.toFixed(1)}s` : ""
+                      }）`,
+                  enableKenBurns && "輕微縮放動畫（Ken Burns）",
                 ].filter(Boolean)}
               />
             )}
@@ -1510,6 +1544,16 @@ function ExtrasStep({
   avatarCustomSlides,
   setAvatarCustomSlides,
   slideCount,
+  readingPauseSec,
+  setReadingPauseSec,
+  closingPauseSec,
+  setClosingPauseSec,
+  targetDurationEnabled,
+  setTargetDurationEnabled,
+  targetDurationSec,
+  setTargetDurationSec,
+  enableKenBurns,
+  setEnableKenBurns,
 }) {
   return (
     <>
@@ -1593,8 +1637,129 @@ function ExtrasStep({
           setCustomSlides={setAvatarCustomSlides}
           slideCount={slideCount}
         />
+
+        <PacingField
+          readingPauseSec={readingPauseSec}
+          setReadingPauseSec={setReadingPauseSec}
+          closingPauseSec={closingPauseSec}
+          setClosingPauseSec={setClosingPauseSec}
+          targetDurationEnabled={targetDurationEnabled}
+          setTargetDurationEnabled={setTargetDurationEnabled}
+          targetDurationSec={targetDurationSec}
+          setTargetDurationSec={setTargetDurationSec}
+          enableKenBurns={enableKenBurns}
+          setEnableKenBurns={setEnableKenBurns}
+        />
       </div>
     </>
+  );
+}
+
+const READING_PAUSE_MAX_SEC = 5;
+const CLOSING_PAUSE_MAX_SEC = 10;
+const TARGET_DURATION_MIN_SEC = 10;
+const TARGET_DURATION_MAX_SEC = 3600;
+
+function formatSecondsAsMinSec(totalSec) {
+  const s = Math.max(0, Math.round(totalSec));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  return `${m}:${String(r).padStart(2, "0")}`;
+}
+
+// Reading Pause / 目標影片長度 only ever extend a slide's own *visual* hold
+// time (and, via silent padding baked in server-side, its audio track) —
+// they never touch the real narration audio, its chunks, or the subtitle
+// cues generated from it. See video.py's narration_durations_ms vs.
+// visual_durations_ms split.
+function PacingField({
+  readingPauseSec,
+  setReadingPauseSec,
+  closingPauseSec,
+  setClosingPauseSec,
+  targetDurationEnabled,
+  setTargetDurationEnabled,
+  targetDurationSec,
+  setTargetDurationSec,
+  enableKenBurns,
+  setEnableKenBurns,
+}) {
+  return (
+    <div className="field full">
+      <label>節奏控制</label>
+      <p className="hint" style={{ margin: "0 0 8px" }}>
+        只會延長畫面停留（必要時加上靜音），不會改變任何一句旁白配音本身的長度或語速。
+      </p>
+
+      <label className="pacing-toggle">
+        <input
+          type="checkbox"
+          checked={targetDurationEnabled}
+          onChange={(e) => setTargetDurationEnabled(e.target.checked)}
+        />
+        設定目標影片長度，自動分配停頓時間
+      </label>
+
+      {targetDurationEnabled ? (
+        <div style={{ marginTop: 8 }}>
+          <label htmlFor="target-duration-range">
+            目標長度 <span className="hint">{formatSecondsAsMinSec(targetDurationSec)}</span>
+          </label>
+          <input
+            id="target-duration-range"
+            type="range"
+            min={TARGET_DURATION_MIN_SEC}
+            max={TARGET_DURATION_MAX_SEC}
+            step={5}
+            value={targetDurationSec}
+            onChange={(e) => setTargetDurationSec(Number(e.target.value))}
+          />
+          <p className="hint" style={{ margin: "6px 0 0" }}>
+            系統會把每一頁的閱讀停頓平均分配以貼近這個長度；如果旁白本身總長已經超過目標，會停在旁白最短能到的長度，絕不會加快語速或剪短配音。
+          </p>
+        </div>
+      ) : (
+        <div className="field-grid" style={{ marginTop: 8 }}>
+          <div className="field">
+            <label htmlFor="reading-pause-range">
+              每頁閱讀停頓 <span className="hint">{readingPauseSec.toFixed(1)} 秒</span>
+            </label>
+            <input
+              id="reading-pause-range"
+              type="range"
+              min={0}
+              max={READING_PAUSE_MAX_SEC}
+              step={0.1}
+              value={readingPauseSec}
+              onChange={(e) => setReadingPauseSec(Number(e.target.value))}
+            />
+          </div>
+          <div className="field">
+            <label htmlFor="closing-pause-range">
+              結尾額外停留 <span className="hint">{closingPauseSec.toFixed(1)} 秒</span>
+            </label>
+            <input
+              id="closing-pause-range"
+              type="range"
+              min={0}
+              max={CLOSING_PAUSE_MAX_SEC}
+              step={0.5}
+              value={closingPauseSec}
+              onChange={(e) => setClosingPauseSec(Number(e.target.value))}
+            />
+          </div>
+        </div>
+      )}
+
+      <label className="pacing-toggle" style={{ marginTop: 10 }}>
+        <input
+          type="checkbox"
+          checked={enableKenBurns}
+          onChange={(e) => setEnableKenBurns(e.target.checked)}
+        />
+        輕微縮放動畫（Ken Burns，讓靜態畫面不那麼死板）
+      </label>
+    </div>
   );
 }
 

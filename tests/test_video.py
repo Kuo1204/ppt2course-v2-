@@ -11,11 +11,13 @@ from ppt2course.video import (
     VideoComposeError,
     _add_logo_overlay,
     _audio_acrossfade_chain,
+    _audio_label_filter,
     _build_cues,
     _build_ffmpeg_command,
     _compute_slide_offsets,
     _concatenate_with_intro_outro,
     _effective_transition_ms,
+    _ken_burns_filter,
     _mix_background_music,
     _scale_pad_filter,
     _total_duration_ms,
@@ -980,3 +982,174 @@ def test_compose_video_no_optional_extras_only_calls_ffmpeg_once(tmp_path):
                 )
 
     assert mock_run.call_count == 1
+
+
+# ---- reading_pause_ms (visual-only slide hold, no change to narration) ----
+
+def test_slide_video_input_rejects_negative_reading_pause():
+    with pytest.raises(VideoComposeError):
+        SlideVideoInput(
+            image_path="img.png", audio_path="audio.mp3", chunks=[], reading_pause_ms=-1
+        )
+
+
+def test_slide_video_input_reading_pause_defaults_to_zero():
+    slide = SlideVideoInput(image_path="img.png", audio_path="audio.mp3", chunks=[])
+    assert slide.reading_pause_ms == 0
+
+
+def test_audio_label_filter_without_pause_is_unchanged_anull():
+    assert _audio_label_filter(2, 0) == "[2:a]anull[a0]"
+
+
+def test_audio_label_filter_with_pause_pads_to_visual_duration():
+    assert _audio_label_filter(2, 0, visual_duration_ms=2500) == "[2:a]apad=whole_dur=2.5[a0]"
+
+
+def test_build_ffmpeg_command_reading_pause_extends_image_hold_time():
+    slide1 = SlideVideoInput(
+        image_path="s1.png", audio_path="a1.mp3", chunks=[TimedChunk("你好", 0, 800)],
+        reading_pause_ms=500,
+    )
+    slide2 = _slide([TimedChunk("謝謝", 0, 700)])
+    # durations_ms passed in here already represents *visual* duration —
+    # compose_video is the one responsible for adding reading_pause_ms on
+    # top of the real narration length before calling this.
+    cmd = _build_ffmpeg_command(
+        [slide1, slide2],
+        durations_ms=[2500, 1000],  # slide1: 2000ms narration + 500ms pause
+        offsets_ms=[0, 2000],
+        srt_path="out.srt",
+        out_video_path="out.mp4",
+        transition="fade",
+        transition_duration_ms=500,
+        resolution=(1920, 1080),
+        fps=30,
+        font_size=64,
+    )
+    assert ["-loop", "1", "-t", "2.5", "-i", "s1.png"] == cmd[cmd.index("-loop"):cmd.index("-loop") + 6]
+    filter_complex = cmd[cmd.index("-filter_complex") + 1]
+    assert "[2:a]apad=whole_dur=2.5[a0]" in filter_complex
+    assert "[3:a]anull[a1]" in filter_complex  # slide2 has no pause -> unchanged
+
+
+def test_compose_video_reading_pause_shifts_next_slide_offset_without_touching_first_cue(tmp_path):
+    # The single most important reading-pause regression: the pause moves
+    # *when the next slide starts*, but never how long the first slide's own
+    # subtitle cue lasts.
+    chunks1 = [TimedChunk("你好", 0, 800)]
+    chunks2 = [TimedChunk("謝謝", 0, 700)]
+
+    def _run(pause_ms: int, srt_path):
+        slide1 = SlideVideoInput(
+            image_path="s1.png", audio_path="a1.mp3", chunks=chunks1, reading_pause_ms=pause_ms
+        )
+        slide2 = SlideVideoInput(image_path="s2.png", audio_path="a2.mp3", chunks=chunks2)
+        with patch("ppt2course.video.shutil.which", return_value="/usr/bin/ffmpeg"):
+            with patch(
+                "ppt2course.video.get_audio_duration_ms", side_effect=[2000, 1000]
+            ):
+                with patch(
+                    "ppt2course.video.subprocess.run", return_value=_fake_run_ok()
+                ) as mock_run:
+                    compose_video(
+                        [slide1, slide2],
+                        str(tmp_path / f"out_{pause_ms}.mp4"),
+                        str(srt_path),
+                        transition_duration_ms=500,
+                    )
+        return srt_path.read_text(encoding="utf-8"), mock_run
+
+    srt_without, _ = _run(0, tmp_path / "without.srt")
+    srt_with, mock_run = _run(1000, tmp_path / "with.srt")
+
+    # First slide's own cue: identical start/end in both cases.
+    first_cue_without = srt_without.split("\n\n")[0]
+    first_cue_with = srt_with.split("\n\n")[0]
+    assert first_cue_without == first_cue_with
+
+    # Second slide's cue starts 1000ms later with the pause (offset shifted
+    # from 2000-500=1500 to 3000-500=2500).
+    second_cue_with = srt_with.split("\n\n")[1]
+    assert "00:00:02,500" in second_cue_with
+
+    filter_complex = mock_run.call_args[0][0][
+        mock_run.call_args[0][0].index("-filter_complex") + 1
+    ]
+    assert "apad=whole_dur=3.0" in filter_complex  # 2000ms narration + 1000ms pause
+
+
+# ---- Ken Burns (subtle zoompan) ----
+
+def test_ken_burns_filter_reaches_max_zoom_by_the_last_frame():
+    filt = _ken_burns_filter(0, "v0", 1920, 1080, 30, 2000)  # 2s @ 30fps = 60 frames
+    assert "zoompan=" in filt
+    assert "min(1+(1.03-1)*on/60,1.03)" in filt
+    assert "s=1920x1080" in filt
+    assert "fps=30" in filt
+
+
+def test_build_ffmpeg_command_ken_burns_replaces_scale_pad_for_every_slide():
+    slide1 = _slide([TimedChunk("你好", 0, 800)])
+    slide2 = _slide([TimedChunk("謝謝", 0, 700)])
+    cmd = _build_ffmpeg_command(
+        [slide1, slide2],
+        durations_ms=[2000, 1000],
+        offsets_ms=[0, 1500],
+        srt_path="out.srt",
+        out_video_path="out.mp4",
+        transition="fade",
+        transition_duration_ms=500,
+        resolution=(1920, 1080),
+        fps=30,
+        font_size=64,
+        enable_ken_burns=True,
+    )
+    filter_complex = cmd[cmd.index("-filter_complex") + 1]
+    assert "zoompan=" in filter_complex
+    assert "[0:v]scale=1920:1080:force_original_aspect_ratio=decrease" not in filter_complex
+
+
+def test_build_ffmpeg_command_ken_burns_off_by_default_is_unchanged():
+    slide1 = _slide([TimedChunk("你好", 0, 800)])
+    cmd = _build_ffmpeg_command(
+        [slide1],
+        durations_ms=[2000],
+        offsets_ms=[0],
+        srt_path="out.srt",
+        out_video_path="out.mp4",
+        transition="fade",
+        transition_duration_ms=500,
+        resolution=(1920, 1080),
+        fps=30,
+        font_size=64,
+    )
+    filter_complex = cmd[cmd.index("-filter_complex") + 1]
+    assert "zoompan" not in filter_complex
+
+
+def test_build_ffmpeg_command_ken_burns_composes_with_broll_and_avatar():
+    slide = SlideVideoInput(
+        image_path="s1.png",
+        audio_path="a1.mp3",
+        chunks=[TimedChunk("你好", 0, 800)],
+        broll_overlays=(BrollOverlay(image_path="b.jpg", start_ms=100, end_ms=300),),
+        avatar_overlays=(AvatarOverlay(image_path="idle.png", start_ms=0, end_ms=1000),),
+    )
+    cmd = _build_ffmpeg_command(
+        [slide],
+        durations_ms=[1000],
+        offsets_ms=[0],
+        srt_path="out.srt",
+        out_video_path="out.mp4",
+        transition="fade",
+        transition_duration_ms=500,
+        resolution=(1920, 1080),
+        fps=30,
+        font_size=64,
+        enable_ken_burns=True,
+    )
+    filter_complex = cmd[cmd.index("-filter_complex") + 1]
+    assert "[0:v]" in filter_complex and "zoompan=" in filter_complex
+    assert "[v0base][v0broll0]overlay=enable='between(t,0.1,0.3)'[v0brolled]" in filter_complex
+    assert "[v0brolled][v0avatar0]overlay=" in filter_complex

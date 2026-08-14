@@ -641,3 +641,221 @@ def test_avatar_asset_set_override_is_used_instead_of_default(tmp_path):
 
     overlay = mock_compose.call_args.args[0][0].avatar_overlays[0]
     assert overlay.image_path == "custom_open.png"
+
+
+# ---- reading_pause_ms / closing_pause_ms / target_duration_ms / Ken Burns ----
+# These only ever change SlideVideoInput.reading_pause_ms (flat mode) or,
+# additionally, measure real narration length up front to auto-distribute
+# pauses (target mode) -- never the script, chunks, or TTS call count.
+
+
+def test_flat_reading_pause_applied_uniformly_to_every_slide(tmp_path):
+    slides = _slides(2)
+    with patch("ppt2course.pipeline.parse_ppt", return_value=slides):
+        with patch("ppt2course.pipeline.generate_script", return_value=["講稿一", "講稿二"]):
+            with patch("ppt2course.pipeline.clean_script", side_effect=lambda t: t):
+                with patch(
+                    "ppt2course.pipeline.synthesize", return_value=[TimedChunk("x", 0, 1000)]
+                ):
+                    with patch("ppt2course.pipeline.compose_video") as mock_compose:
+                        with patch(
+                            "ppt2course.pipeline.export_outputs",
+                            return_value={"mp4": "a", "srt": "b", "docx": "c"},
+                        ):
+                            with patch("ppt2course.pipeline.os.path.getsize", return_value=1234):
+                                with patch(
+                                    "ppt2course.pipeline.get_audio_duration_ms", return_value=1000
+                                ):
+                                    run_pipeline(
+                                        "deck.pptx", ["img1.png", "img2.png"],
+                                        str(tmp_path / "work"), str(tmp_path / "out"), "課程",
+                                        ScriptMode.NOTES, "zh-TW-HsiaoChenNeural",
+                                        reading_pause_ms=800,
+                                    )
+
+    slide_inputs = mock_compose.call_args.args[0]
+    assert [s.reading_pause_ms for s in slide_inputs] == [800, 800]
+
+
+def test_closing_pause_added_only_to_the_last_slide(tmp_path):
+    slides = _slides(2)
+    with patch("ppt2course.pipeline.parse_ppt", return_value=slides):
+        with patch("ppt2course.pipeline.generate_script", return_value=["講稿一", "講稿二"]):
+            with patch("ppt2course.pipeline.clean_script", side_effect=lambda t: t):
+                with patch(
+                    "ppt2course.pipeline.synthesize", return_value=[TimedChunk("x", 0, 1000)]
+                ):
+                    with patch("ppt2course.pipeline.compose_video") as mock_compose:
+                        with patch(
+                            "ppt2course.pipeline.export_outputs",
+                            return_value={"mp4": "a", "srt": "b", "docx": "c"},
+                        ):
+                            with patch("ppt2course.pipeline.os.path.getsize", return_value=1234):
+                                with patch(
+                                    "ppt2course.pipeline.get_audio_duration_ms", return_value=1000
+                                ):
+                                    run_pipeline(
+                                        "deck.pptx", ["img1.png", "img2.png"],
+                                        str(tmp_path / "work"), str(tmp_path / "out"), "課程",
+                                        ScriptMode.NOTES, "zh-TW-HsiaoChenNeural",
+                                        reading_pause_ms=500,
+                                        closing_pause_ms=2000,
+                                    )
+
+    slide_inputs = mock_compose.call_args.args[0]
+    assert [s.reading_pause_ms for s in slide_inputs] == [500, 2500]
+
+
+def test_no_pause_settings_never_touches_reading_pause_ms(tmp_path):
+    # Regression guard, same spirit as the broll/avatar "no-op is free"
+    # tests: zero pause settings must leave SlideVideoInput exactly as it
+    # was before this feature existed, and never call get_audio_duration_ms
+    # ahead of compose_video.
+    slides = _slides(1)
+    with patch("ppt2course.pipeline.parse_ppt", return_value=slides):
+        with patch("ppt2course.pipeline.generate_script", return_value=["講稿"]):
+            with patch("ppt2course.pipeline.clean_script", side_effect=lambda t: t):
+                with patch(
+                    "ppt2course.pipeline.synthesize", return_value=[TimedChunk("x", 0, 1000)]
+                ):
+                    with patch("ppt2course.pipeline.compose_video") as mock_compose:
+                        with patch(
+                            "ppt2course.pipeline.export_outputs",
+                            return_value={"mp4": "a", "srt": "b", "docx": "c"},
+                        ):
+                            with patch("ppt2course.pipeline.os.path.getsize", return_value=1234):
+                                with patch(
+                                    "ppt2course.pipeline.get_audio_duration_ms", return_value=1000
+                                ) as mock_duration:
+                                    outputs = run_pipeline(
+                                        "deck.pptx", ["img1.png"],
+                                        str(tmp_path / "work"), str(tmp_path / "out"), "課程",
+                                        ScriptMode.NOTES, "zh-TW-HsiaoChenNeural",
+                                    )
+
+    assert mock_compose.call_args.args[0][0].reading_pause_ms == 0
+    mock_duration.assert_called_once()  # only export_outputs's video_duration_ms lookup
+    assert "target_duration_reachable" not in outputs
+
+
+def test_target_duration_shorter_than_narration_leaves_pauses_at_zero_and_unreachable(tmp_path):
+    slides = _slides(2)
+    with patch("ppt2course.pipeline.parse_ppt", return_value=slides):
+        with patch("ppt2course.pipeline.generate_script", return_value=["講稿一", "講稿二"]):
+            with patch("ppt2course.pipeline.clean_script", side_effect=lambda t: t):
+                with patch(
+                    "ppt2course.pipeline.synthesize", return_value=[TimedChunk("x", 0, 1000)]
+                ):
+                    with patch("ppt2course.pipeline.compose_video") as mock_compose:
+                        with patch(
+                            "ppt2course.pipeline.export_outputs",
+                            return_value={"mp4": "a", "srt": "b", "docx": "c"},
+                        ):
+                            with patch("ppt2course.pipeline.os.path.getsize", return_value=1234):
+                                # 2 calls to measure real narration (4000, 3000) +
+                                # 1 final call for outputs' video_duration_ms.
+                                with patch(
+                                    "ppt2course.pipeline.get_audio_duration_ms",
+                                    side_effect=[4000, 3000, 6500],
+                                ):
+                                    outputs = run_pipeline(
+                                        "deck.pptx", ["img1.png", "img2.png"],
+                                        str(tmp_path / "work"), str(tmp_path / "out"), "課程",
+                                        ScriptMode.NOTES, "zh-TW-HsiaoChenNeural",
+                                        transition_duration_ms=500,
+                                        target_duration_ms=5000,  # narration-only total is 6500ms
+                                    )
+
+    slide_inputs = mock_compose.call_args.args[0]
+    assert [s.reading_pause_ms for s in slide_inputs] == [0, 0]
+    assert outputs["target_duration_reachable"] is False
+
+
+def test_target_duration_longer_than_narration_distributes_slack_as_reading_pause(tmp_path):
+    slides = _slides(2)
+    with patch("ppt2course.pipeline.parse_ppt", return_value=slides):
+        with patch("ppt2course.pipeline.generate_script", return_value=["講稿一", "講稿二"]):
+            with patch("ppt2course.pipeline.clean_script", side_effect=lambda t: t):
+                with patch(
+                    "ppt2course.pipeline.synthesize", return_value=[TimedChunk("x", 0, 1000)]
+                ):
+                    with patch("ppt2course.pipeline.compose_video") as mock_compose:
+                        with patch(
+                            "ppt2course.pipeline.export_outputs",
+                            return_value={"mp4": "a", "srt": "b", "docx": "c"},
+                        ):
+                            with patch("ppt2course.pipeline.os.path.getsize", return_value=1234):
+                                with patch(
+                                    "ppt2course.pipeline.get_audio_duration_ms",
+                                    side_effect=[4000, 3000, 8500],
+                                ):
+                                    outputs = run_pipeline(
+                                        "deck.pptx", ["img1.png", "img2.png"],
+                                        str(tmp_path / "work"), str(tmp_path / "out"), "課程",
+                                        ScriptMode.NOTES, "zh-TW-HsiaoChenNeural",
+                                        transition_duration_ms=500,
+                                        # narration-only total is 6500ms; +2000ms slack.
+                                        target_duration_ms=8500,
+                                    )
+
+    slide_inputs = mock_compose.call_args.args[0]
+    assert [s.reading_pause_ms for s in slide_inputs] == [1000, 1000]
+    assert outputs["target_duration_reachable"] is True
+
+
+def test_target_duration_mode_ignores_explicit_reading_and_closing_pause(tmp_path):
+    slides = _slides(1)
+    with patch("ppt2course.pipeline.parse_ppt", return_value=slides):
+        with patch("ppt2course.pipeline.generate_script", return_value=["講稿"]):
+            with patch("ppt2course.pipeline.clean_script", side_effect=lambda t: t):
+                with patch(
+                    "ppt2course.pipeline.synthesize", return_value=[TimedChunk("x", 0, 1000)]
+                ):
+                    with patch("ppt2course.pipeline.compose_video") as mock_compose:
+                        with patch(
+                            "ppt2course.pipeline.export_outputs",
+                            return_value={"mp4": "a", "srt": "b", "docx": "c"},
+                        ):
+                            with patch("ppt2course.pipeline.os.path.getsize", return_value=1234):
+                                with patch(
+                                    "ppt2course.pipeline.get_audio_duration_ms",
+                                    side_effect=[4000, 5000],
+                                ):
+                                    run_pipeline(
+                                        "deck.pptx", ["img1.png"],
+                                        str(tmp_path / "work"), str(tmp_path / "out"), "課程",
+                                        ScriptMode.NOTES, "zh-TW-HsiaoChenNeural",
+                                        reading_pause_ms=9999,
+                                        closing_pause_ms=9999,
+                                        target_duration_ms=5000,
+                                    )
+
+    # Auto-computed 1000ms (5000-4000), not the explicit 9999+9999.
+    assert mock_compose.call_args.args[0][0].reading_pause_ms == 1000
+
+
+def test_enable_ken_burns_forwarded_to_compose_video(tmp_path):
+    slides = _slides(1)
+    with patch("ppt2course.pipeline.parse_ppt", return_value=slides):
+        with patch("ppt2course.pipeline.generate_script", return_value=["講稿"]):
+            with patch("ppt2course.pipeline.clean_script", side_effect=lambda t: t):
+                with patch(
+                    "ppt2course.pipeline.synthesize", return_value=[TimedChunk("x", 0, 1000)]
+                ):
+                    with patch("ppt2course.pipeline.compose_video") as mock_compose:
+                        with patch(
+                            "ppt2course.pipeline.export_outputs",
+                            return_value={"mp4": "a", "srt": "b", "docx": "c"},
+                        ):
+                            with patch("ppt2course.pipeline.os.path.getsize", return_value=1234):
+                                with patch(
+                                    "ppt2course.pipeline.get_audio_duration_ms", return_value=1000
+                                ):
+                                    run_pipeline(
+                                        "deck.pptx", ["img1.png"],
+                                        str(tmp_path / "work"), str(tmp_path / "out"), "課程",
+                                        ScriptMode.NOTES, "zh-TW-HsiaoChenNeural",
+                                        enable_ken_burns=True,
+                                    )
+
+    assert mock_compose.call_args.kwargs["enable_ken_burns"] is True

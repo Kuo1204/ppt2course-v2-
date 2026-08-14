@@ -64,6 +64,12 @@ AVATAR_SIZES = tuple(_AVATAR_SIZE_HEIGHT_FRACTION)
 DEFAULT_AVATAR_SIZE = "small"
 DEFAULT_AVATAR_MARGIN = 24
 
+# Ken Burns: a barely-there slow zoom (100% -> 103%) across each slide's own
+# on-screen time, meant to keep a static PPT picture from feeling
+# perfectly frozen without ever drawing attention to itself as an "effect".
+KEN_BURNS_ZOOM_MAX = 1.03
+DEFAULT_ENABLE_KEN_BURNS = False
+
 # ffmpeg overlay= x:y expressions per corner, in terms of the overlay
 # filter's own W/H (base video) and w/h (logo) variables.
 _LOGO_POSITION_OVERLAYS = {
@@ -144,6 +150,21 @@ class SlideVideoInput:
     # Optional corner-anchored 2D avatar mouth-flap frames. Empty by
     # default, so every existing caller/test is unaffected.
     avatar_overlays: tuple[AvatarOverlay, ...] = ()
+    # Extra silent hold time (ms) appended after this slide's own narration
+    # ends, purely so the viewer has a beat to read the slide before it
+    # transitions away. This extends the slide's own *visual* (and, via
+    # silent padding, audio-track) duration only — the real narration audio
+    # file on disk, its chunks, and the subtitle cues built from those
+    # chunks are completely untouched; see _build_cues and
+    # compose_video's narration_durations_ms vs. visual_durations_ms split
+    # below. 0 by default, so every existing caller/test is unaffected.
+    reading_pause_ms: int = 0
+
+    def __post_init__(self) -> None:
+        if self.reading_pause_ms < 0:
+            raise VideoComposeError(
+                f"reading_pause_ms must be >= 0, got {self.reading_pause_ms}"
+            )
 
 
 # The minimum stretch of a slide's own audio that must remain outside any
@@ -253,6 +274,26 @@ def _scale_pad_filter(
     )
 
 
+def _ken_burns_filter(
+    index: int, out_label: str, width: int, height: int, fps: int, duration_ms: int
+) -> str:
+    # zoompan's own s= already crops-to-fill a WxH canvas (like
+    # _cover_scale_filter's "cover" behavior) as it zooms, so this replaces
+    # _scale_pad_filter entirely for a Ken-Burns slide rather than
+    # composing with it. `on` is zoompan's own output-frame counter; tying
+    # the zoom expression to on/total_frames (not to a fixed per-frame
+    # increment) makes the ramp reach exactly KEN_BURNS_ZOOM_MAX by this
+    # slide's own last frame regardless of how long it's on screen.
+    total_frames = max(1, round(duration_ms / 1000 * fps))
+    zoom_expr = f"min(1+({KEN_BURNS_ZOOM_MAX}-1)*on/{total_frames},{KEN_BURNS_ZOOM_MAX})"
+    return (
+        f"[{index}:v]scale={width}:{height}:force_original_aspect_ratio=increase,"
+        f"crop={width}:{height},setsar=1,fps={fps},"
+        f"zoompan=z='{zoom_expr}':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+        f"s={width}x{height}:fps={fps},setsar=1[{out_label}]"
+    )
+
+
 def _cover_scale_filter(index: int, out_label: str, width: int, height: int, fps: int) -> str:
     # "cover" (scale up + crop), not "contain" (_scale_pad_filter's
     # letterbox behavior) — a B-roll is meant to fully replace the slide's
@@ -355,8 +396,20 @@ def _avatar_scale_and_overlay_filters(
     return parts
 
 
-def _audio_label_filter(input_index: int, slide_index: int) -> str:
-    return f"[{input_index}:a]anull[a{slide_index}]"
+def _audio_label_filter(
+    input_index: int, slide_index: int, visual_duration_ms: int | None = None
+) -> str:
+    # Only a slide with an actual reading pause needs padding — every other
+    # slide keeps the exact "anull" passthrough string it always had, so a
+    # job with reading_pause_ms=0 everywhere (the default) produces a
+    # byte-identical filter graph to before this feature existed. apad's
+    # whole_dur pads with silence up to the target only if the real stream
+    # is shorter (never trims), so this is safe even against a rounding
+    # mismatch between the ms this was computed from and ffmpeg's own
+    # measurement of the same audio file.
+    if visual_duration_ms is None:
+        return f"[{input_index}:a]anull[a{slide_index}]"
+    return f"[{input_index}:a]apad=whole_dur={visual_duration_ms / 1000}[a{slide_index}]"
 
 
 def _video_xfade_chain(
@@ -443,6 +496,7 @@ def _build_ffmpeg_command(
     avatar_position: str = DEFAULT_AVATAR_POSITION,
     avatar_size: str = DEFAULT_AVATAR_SIZE,
     avatar_margin: int = DEFAULT_AVATAR_MARGIN,
+    enable_ken_burns: bool = DEFAULT_ENABLE_KEN_BURNS,
 ) -> list[str]:
     width, height = resolution
     n = len(slides)
@@ -469,13 +523,25 @@ def _build_ffmpeg_command(
     for i, slide in enumerate(slides):
         has_broll = bool(slide.broll_overlays)
         has_avatar = bool(slide.avatar_overlays)
+        needs_own_label = has_broll or has_avatar
 
-        if not has_broll and not has_avatar:
-            scale_filters.append(_scale_pad_filter(i, width, height, fps))
+        if not needs_own_label:
+            base_label = f"v{i}"
+            if enable_ken_burns:
+                scale_filters.append(
+                    _ken_burns_filter(i, base_label, width, height, fps, durations_ms[i])
+                )
+            else:
+                scale_filters.append(_scale_pad_filter(i, width, height, fps))
             continue
 
-        base_label = f"v{i}base" if (has_broll or has_avatar) else f"v{i}"
-        scale_filters.append(_scale_pad_filter(i, width, height, fps, out_label=base_label))
+        base_label = f"v{i}base"
+        if enable_ken_burns:
+            scale_filters.append(
+                _ken_burns_filter(i, base_label, width, height, fps, durations_ms[i])
+            )
+        else:
+            scale_filters.append(_scale_pad_filter(i, width, height, fps, out_label=base_label))
         current_label = base_label
 
         if has_broll:
@@ -515,7 +581,14 @@ def _build_ffmpeg_command(
             )
             next_input_index += len(slide.avatar_overlays)
 
-    audio_label_filters = [_audio_label_filter(n + i, i) for i in range(n)]
+    audio_label_filters = [
+        _audio_label_filter(
+            n + i,
+            i,
+            visual_duration_ms=durations_ms[i] if slide.reading_pause_ms > 0 else None,
+        )
+        for i, slide in enumerate(slides)
+    ]
     xfade_filter, video_label = _video_xfade_chain(n, transition, transition_duration_ms, offsets_ms)
     audio_filter, audio_label = _audio_acrossfade_chain(n, transition_duration_ms)
     sub_filter, final_video_label = _subtitle_filter(
@@ -679,6 +752,7 @@ def compose_video(
     avatar_position: str = DEFAULT_AVATAR_POSITION,
     avatar_size: str = DEFAULT_AVATAR_SIZE,
     avatar_margin: int = DEFAULT_AVATAR_MARGIN,
+    enable_ken_burns: bool = DEFAULT_ENABLE_KEN_BURNS,
 ) -> None:
     if not slides:
         raise VideoComposeError("slides must not be empty")
@@ -686,9 +760,22 @@ def compose_video(
     if shutil.which("ffmpeg") is None:
         raise VideoComposeError("ffmpeg executable not found")
 
-    durations_ms = [get_audio_duration_ms(s.audio_path) for s in slides]
+    # narration_durations_ms is the one true master timeline (real audio, as
+    # measured off disk) — B-roll/avatar overlay windows are validated
+    # against it, and subtitle cues (via slide.chunks, which know nothing
+    # about any padding) always land inside it regardless of what follows.
+    # visual_durations_ms adds each slide's own reading_pause_ms on top —
+    # that's the number everything about *layout in time* (crossfade
+    # offsets, image -t, this slide's own audio padded with trailing
+    # silence) is computed from. A reading_pause_ms of 0 everywhere (the
+    # default) makes the two lists identical, so nothing here changes
+    # behavior for a caller that has never heard of reading pauses.
+    narration_durations_ms = [get_audio_duration_ms(s.audio_path) for s in slides]
+    visual_durations_ms = [
+        n + s.reading_pause_ms for n, s in zip(narration_durations_ms, slides)
+    ]
 
-    for slide, duration_ms in zip(slides, durations_ms):
+    for slide, duration_ms in zip(slides, narration_durations_ms):
         for overlay in slide.broll_overlays:
             if overlay.end_ms > duration_ms:
                 raise VideoComposeError(
@@ -705,9 +792,9 @@ def compose_video(
     # Reassigned (not a new variable) so every downstream use of
     # transition_duration_ms below — offsets, subtitle cues, and the ffmpeg
     # xfade/acrossfade filters — automatically agrees on the same,
-    # per-slide-audio-safe value.
-    transition_duration_ms = _effective_transition_ms(durations_ms, transition_duration_ms)
-    offsets_ms = _compute_slide_offsets(durations_ms, transition_duration_ms)
+    # per-slide-visual-duration-safe value.
+    transition_duration_ms = _effective_transition_ms(visual_durations_ms, transition_duration_ms)
+    offsets_ms = _compute_slide_offsets(visual_durations_ms, transition_duration_ms)
 
     # A per-job custom dictionary needs its own isolated jieba.Tokenizer (see
     # wordseg.py) — the shared default segmenter otherwise covers every job
@@ -715,7 +802,12 @@ def compose_video(
     word_segmenter = (
         WordSegmenter(custom_dict_path) if custom_dict_path else get_default_segmenter()
     )
-    cues = _build_cues(slides, durations_ms, transition_duration_ms, word_segmenter)
+    # Cue placement uses visual_durations_ms (where each slide's own local
+    # clock actually starts in the final render, including any reading
+    # pause before it) — but the cues *within* a slide only ever span
+    # slide.chunks, which is real narration timing untouched by the pause,
+    # so captions still end exactly at the real narration end.
+    cues = _build_cues(slides, visual_durations_ms, transition_duration_ms, word_segmenter)
     with open(out_srt_path, "w", encoding="utf-8", newline="") as f:
         f.write(cues_to_srt(cues))
 
@@ -727,7 +819,7 @@ def compose_video(
 
         cmd = _build_ffmpeg_command(
             slides,
-            durations_ms,
+            visual_durations_ms,
             offsets_ms,
             out_srt_path,
             core_output,
@@ -740,6 +832,7 @@ def compose_video(
             avatar_position=avatar_position,
             avatar_size=avatar_size,
             avatar_margin=avatar_margin,
+            enable_ken_burns=enable_ken_burns,
         )
         _run_ffmpeg(cmd, "slide/transition/subtitle composition")
 

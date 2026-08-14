@@ -409,6 +409,100 @@ def test_create_job_rejects_non_integer_avatar_custom_slides(tmp_path):
     assert response.status_code == 400
 
 
+# ---- reading_pause_ms / closing_pause_ms / target_duration_ms / enable_ken_burns ----
+
+
+def test_create_job_defaults_pacing_settings(tmp_path):
+    calls = []
+
+    def fake_pipeline(**kwargs):
+        calls.append(kwargs)
+        return {}
+
+    client, manager = _make_client(fake_pipeline, tmp_path)
+    client.post("/api/jobs", data=_upload_form(), files=_upload_files())
+    manager.process_next()
+
+    assert calls[0]["reading_pause_ms"] == 0
+    assert calls[0]["closing_pause_ms"] == 0
+    assert calls[0]["target_duration_ms"] is None
+    assert calls[0]["enable_ken_burns"] is False
+
+
+def test_create_job_forwards_pacing_settings(tmp_path):
+    calls = []
+
+    def fake_pipeline(**kwargs):
+        calls.append(kwargs)
+        return {}
+
+    client, manager = _make_client(fake_pipeline, tmp_path)
+    client.post(
+        "/api/jobs",
+        data=_upload_form(
+            reading_pause_ms="800",
+            closing_pause_ms="2000",
+            target_duration_ms="60000",
+            enable_ken_burns="true",
+        ),
+        files=_upload_files(),
+    )
+    manager.process_next()
+
+    assert calls[0]["reading_pause_ms"] == 800
+    assert calls[0]["closing_pause_ms"] == 2000
+    assert calls[0]["target_duration_ms"] == 60000
+    assert calls[0]["enable_ken_burns"] is True
+
+
+def test_create_job_rejects_negative_reading_pause_ms(tmp_path):
+    client, _ = _make_client(lambda **kwargs: {}, tmp_path)
+    response = client.post(
+        "/api/jobs", data=_upload_form(reading_pause_ms="-1"), files=_upload_files()
+    )
+    assert response.status_code == 400
+
+
+def test_create_job_rejects_negative_closing_pause_ms(tmp_path):
+    client, _ = _make_client(lambda **kwargs: {}, tmp_path)
+    response = client.post(
+        "/api/jobs", data=_upload_form(closing_pause_ms="-1"), files=_upload_files()
+    )
+    assert response.status_code == 400
+
+
+def test_create_job_rejects_non_positive_target_duration_ms(tmp_path):
+    client, _ = _make_client(lambda **kwargs: {}, tmp_path)
+    response = client.post(
+        "/api/jobs", data=_upload_form(target_duration_ms="0"), files=_upload_files()
+    )
+    assert response.status_code == 400
+
+
+def test_get_job_status_surfaces_target_duration_reachable(tmp_path):
+    client, manager = _make_client(
+        lambda **kwargs: {"target_duration_reachable": False}, tmp_path
+    )
+    response = client.post(
+        "/api/jobs", data=_upload_form(target_duration_ms="1000"), files=_upload_files()
+    )
+    job_id = response.json()["job_id"]
+    manager.process_next()
+
+    body = client.get(f"/api/jobs/{job_id}").json()
+    assert body["details"]["target_duration_reachable"] is False
+
+
+def test_get_job_status_target_duration_reachable_absent_when_not_requested(tmp_path):
+    client, manager = _make_client(lambda **kwargs: {}, tmp_path)
+    response = client.post("/api/jobs", data=_upload_form(), files=_upload_files())
+    job_id = response.json()["job_id"]
+    manager.process_next()
+
+    body = client.get(f"/api/jobs/{job_id}").json()
+    assert body["details"]["target_duration_reachable"] is None
+
+
 def test_get_job_status_queued_before_processing(tmp_path):
     client, manager = _make_client(lambda **kwargs: {}, tmp_path)
 

@@ -226,6 +226,18 @@
   letter-spacing: normal;
 }
 
+.pacing-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--text);
+  cursor: pointer;
+}
+
 .avatar-slide-picker {
   display: flex;
   flex-wrap: wrap;

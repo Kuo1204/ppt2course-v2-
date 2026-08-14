@@ -52,6 +52,7 @@ from ppt2course.video import (
     DEFAULT_AVATAR_POSITION,
     DEFAULT_AVATAR_SIZE,
     DEFAULT_BGM_VOLUME,
+    DEFAULT_ENABLE_KEN_BURNS,
     DEFAULT_FONT_SIZE,
     DEFAULT_FPS,
     DEFAULT_LOGO_MARGIN,
@@ -183,6 +184,10 @@ def create_app(
         avatar_size: str = Form(DEFAULT_AVATAR_SIZE),
         avatar_margin: int = Form(DEFAULT_AVATAR_MARGIN),
         avatar_custom_slides: str | None = Form(None),
+        reading_pause_ms: int = Form(0),
+        closing_pause_ms: int = Form(0),
+        target_duration_ms: int | None = Form(None),
+        enable_ken_burns: bool = Form(DEFAULT_ENABLE_KEN_BURNS),
     ):
         try:
             mode = ScriptMode[script_mode]
@@ -202,6 +207,13 @@ def create_app(
             )
         if avatar_size not in AVATAR_SIZES:
             raise HTTPException(status_code=400, detail=f"invalid avatar_size: {avatar_size}")
+
+        if reading_pause_ms < 0:
+            raise HTTPException(status_code=400, detail="reading_pause_ms must be >= 0")
+        if closing_pause_ms < 0:
+            raise HTTPException(status_code=400, detail="closing_pause_ms must be >= 0")
+        if target_duration_ms is not None and target_duration_ms <= 0:
+            raise HTTPException(status_code=400, detail="target_duration_ms must be > 0")
 
         parsed_texts = json.loads(texts) if texts else None
         try:
@@ -284,6 +296,10 @@ def create_app(
             avatar_size=avatar_size,
             avatar_margin=avatar_margin,
             avatar_custom_slides=parsed_avatar_custom_slides,
+            reading_pause_ms=reading_pause_ms,
+            closing_pause_ms=closing_pause_ms,
+            target_duration_ms=target_duration_ms,
+            enable_ken_burns=enable_ken_burns,
         )
         return {"job_id": job_id}
 
@@ -315,6 +331,11 @@ def create_app(
                     "video_duration_ms": job.result.get("video_duration_ms"),
                     "script_char_count": job.result.get("script_char_count"),
                     "generation_seconds": generation_seconds,
+                    # Only present when target_duration_ms was requested;
+                    # False means the target was shorter than the deck's
+                    # real narration-only length already produces — see
+                    # pipeline.py's _reading_pauses_for_target_duration.
+                    "target_duration_reachable": job.result.get("target_duration_reachable"),
                 },
             }
         if job.status is JobStatus.ERROR:
