@@ -10,4 +10,5 @@ frontend/dist/
 
 # runtime job uploads/outputs (per-deployment, not source)
 data/
+*.log
 

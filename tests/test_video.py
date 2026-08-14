@@ -11,6 +11,7 @@ from ppt2course.video import (
     VideoComposeError,
     _add_logo_overlay,
     _audio_acrossfade_chain,
+    _audio_concat_chain,
     _audio_label_filter,
     _build_cues,
     _build_ffmpeg_command,
@@ -643,6 +644,143 @@ def test_compose_video_with_avatar_produces_identical_srt_to_without_avatar(tmp_
     srt_with = _run(True, tmp_path / "with.srt")
 
     assert srt_without == srt_with
+
+
+# ---- avoid_voice_overlap (audio concat instead of acrossfade) ----
+
+def test_audio_concat_chain_single_slide():
+    filt, label = _audio_concat_chain(1)
+    assert filt == ""
+    assert label == "a0"
+
+
+def test_audio_concat_chain_two_slides():
+    filt, label = _audio_concat_chain(2)
+    assert filt == "[a0][a1]concat=n=2:v=0:a=1[aout]"
+    assert label == "aout"
+
+
+def test_audio_concat_chain_three_slides():
+    filt, label = _audio_concat_chain(3)
+    assert filt == "[a0][a1][a2]concat=n=3:v=0:a=1[aout]"
+    assert label == "aout"
+
+
+def test_build_ffmpeg_command_avoid_voice_overlap_uses_concat_not_acrossfade():
+    slide1 = _slide([TimedChunk("你好", 0, 800)])
+    slide2 = _slide([TimedChunk("謝謝", 0, 700)])
+    cmd = _build_ffmpeg_command(
+        [slide1, slide2],
+        durations_ms=[2000, 1500],
+        offsets_ms=[0, 1500],
+        srt_path="out.srt",
+        out_video_path="out.mp4",
+        transition="fade",
+        transition_duration_ms=500,
+        resolution=(1920, 1080),
+        fps=30,
+        font_size=64,
+        avoid_voice_overlap=True,
+    )
+    filter_complex = cmd[cmd.index("-filter_complex") + 1]
+    assert "[a0][a1]concat=n=2:v=0:a=1[aout]" in filter_complex
+    assert "acrossfade" not in filter_complex
+    # Video crossfade itself is untouched -- still uses the (unextended by
+    # this test's caller) offsets/duration it was given.
+    assert "[v0][v1]xfade=transition=fade:duration=0.5:offset=1.5[vout]" in filter_complex
+
+
+def test_build_ffmpeg_command_avoid_voice_overlap_false_is_unchanged():
+    slide1 = _slide([TimedChunk("你好", 0, 800)])
+    slide2 = _slide([TimedChunk("謝謝", 0, 700)])
+    cmd = _build_ffmpeg_command(
+        [slide1, slide2],
+        durations_ms=[2000, 1000],
+        offsets_ms=[0, 1500],
+        srt_path="out.srt",
+        out_video_path="out.mp4",
+        transition="fade",
+        transition_duration_ms=500,
+        resolution=(1920, 1080),
+        fps=30,
+        font_size=64,
+    )
+    filter_complex = cmd[cmd.index("-filter_complex") + 1]
+    assert "concat=n=2:v=0:a=1" not in filter_complex
+    assert "acrossfade" in filter_complex
+
+
+def test_build_ffmpeg_command_avoid_voice_overlap_pads_audio_to_separate_target():
+    # audio_pad_durations_ms lets compose_video give a slide's own apad
+    # target separately from the (possibly last-slide-extended) video hold
+    # time it also passes as durations_ms.
+    slide = SlideVideoInput(
+        image_path="s1.png", audio_path="a1.mp3", chunks=[TimedChunk("x", 0, 800)],
+        reading_pause_ms=500,
+    )
+    cmd = _build_ffmpeg_command(
+        [slide, _slide([TimedChunk("y", 0, 700)])],
+        durations_ms=[2500, 5000],  # last slide's video hold artificially stretched
+        offsets_ms=[0, 2000],
+        srt_path="out.srt",
+        out_video_path="out.mp4",
+        transition="fade",
+        transition_duration_ms=500,
+        resolution=(1920, 1080),
+        fps=30,
+        font_size=64,
+        avoid_voice_overlap=True,
+        audio_pad_durations_ms=[2500, 1500],  # slide0's real apad target
+    )
+    filter_complex = cmd[cmd.index("-filter_complex") + 1]
+    assert "[2:a]apad=whole_dur=2.5[a0]" in filter_complex
+    # slide1 has no reading pause -> anull regardless of either duration list.
+    assert "[3:a]anull[a1]" in filter_complex
+    # But the *video* hold time (image -t) for each slide is what's used for
+    # its own on-screen duration -- slide0's unextended, slide1's extended.
+    ts_values = [cmd[i + 1] for i, arg in enumerate(cmd) if arg == "-t"]
+    assert ts_values[:2] == ["2.5", "5.0"]
+
+
+def test_compose_video_avoid_voice_overlap_extends_last_slide_and_uses_pure_concat_offsets(
+    tmp_path,
+):
+    chunks1 = [TimedChunk("你好", 0, 800)]
+    chunks2 = [TimedChunk("謝謝", 0, 700)]
+    slide1 = SlideVideoInput(image_path="s1.png", audio_path="a1.mp3", chunks=chunks1)
+    slide2 = SlideVideoInput(image_path="s2.png", audio_path="a2.mp3", chunks=chunks2)
+
+    class FakeResult:
+        returncode = 0
+        stderr = ""
+
+    with patch("ppt2course.video.shutil.which", return_value="/usr/bin/ffmpeg"):
+        with patch(
+            "ppt2course.video.get_audio_duration_ms", side_effect=[2000, 1000]
+        ):
+            with patch(
+                "ppt2course.video.subprocess.run", return_value=FakeResult()
+            ) as mock_run:
+                compose_video(
+                    [slide1, slide2],
+                    str(tmp_path / "out.mp4"),
+                    str(tmp_path / "out.srt"),
+                    transition_duration_ms=500,
+                    avoid_voice_overlap=True,
+                )
+
+    cmd = mock_run.call_args[0][0]
+    # durations_ms=[2000,1000], transition=500 -> compressed total (offsets
+    # [0,1500] + last 1000) = 2500; uncompressed (pure concat) total
+    # (offsets [0,2000] + last 1000) = 3000 -> last slide's video hold time
+    # is stretched by exactly that 500ms difference: 1000 -> 1500.
+    ts = [cmd[i + 1] for i, arg in enumerate(cmd) if arg == "-t"]
+    assert ts[:2] == ["2.0", "1.5"]  # slide0 unchanged, slide1 stretched by 500ms
+
+    srt_text = (tmp_path / "out.srt").read_text(encoding="utf-8")
+    # Pure-concat cue offset for slide2: exactly slide1's own 2000ms
+    # duration, not the crossfade-compressed 1500ms.
+    assert "00:00:02,000" in srt_text
 
 
 # ---- compose_video (mocked subprocess) ----

@@ -70,6 +70,13 @@ DEFAULT_AVATAR_MARGIN = 24
 KEN_BURNS_ZOOM_MAX = 1.03
 DEFAULT_ENABLE_KEN_BURNS = False
 
+# When True, a slide's narration never starts until the previous slide's
+# own narration (plus its own reading pause) has completely finished —
+# the video still crossfades purely visually, but audio switches from
+# acrossfade (blended, overlapping) to a straight concat (silent gap,
+# never overlapping). See compose_video's avoid_voice_overlap handling.
+DEFAULT_AVOID_VOICE_OVERLAP = False
+
 # ffmpeg overlay= x:y expressions per corner, in terms of the overlay
 # filter's own W/H (base video) and w/h (logo) variables.
 _LOGO_POSITION_OVERLAYS = {
@@ -448,6 +455,19 @@ def _audio_acrossfade_chain(n: int, transition_duration_ms: int) -> tuple[str, s
     return ";".join(parts), prev_label
 
 
+def _audio_concat_chain(n: int) -> tuple[str, str]:
+    # avoid_voice_overlap's audio path: every [a{i}] stream is already
+    # padded (via _audio_label_filter) to exactly that slide's own
+    # visual_durations_ms — so placing them back-to-back with concat, with
+    # no crossfade blend at all, is exactly "the next slide's narration
+    # never starts until the previous one (and its own reading pause) has
+    # completely finished playing".
+    if n == 1:
+        return "", "a0"
+    inputs = "".join(f"[a{i}]" for i in range(n))
+    return f"{inputs}concat=n={n}:v=0:a=1[aout]", "aout"
+
+
 def _subtitle_filter(
     srt_path: str,
     video_label: str,
@@ -497,9 +517,20 @@ def _build_ffmpeg_command(
     avatar_size: str = DEFAULT_AVATAR_SIZE,
     avatar_margin: int = DEFAULT_AVATAR_MARGIN,
     enable_ken_burns: bool = DEFAULT_ENABLE_KEN_BURNS,
+    avoid_voice_overlap: bool = DEFAULT_AVOID_VOICE_OVERLAP,
+    audio_pad_durations_ms: list[int] | None = None,
 ) -> list[str]:
     width, height = resolution
     n = len(slides)
+    # Normally identical to durations_ms (each slide pads its own audio up
+    # to its own on-screen hold time) — compose_video passes a separate,
+    # unextended list here in avoid_voice_overlap mode, where durations_ms
+    # itself has the last slide's hold time stretched to cover the
+    # now-non-overlapping audio concat's real total length. Padding audio
+    # to that stretched figure too would push extra silence *inside* the
+    # concat instead of after it.
+    if audio_pad_durations_ms is None:
+        audio_pad_durations_ms = durations_ms
 
     cmd = ["ffmpeg", "-y"]
     for slide, duration_ms in zip(slides, durations_ms):
@@ -585,12 +616,15 @@ def _build_ffmpeg_command(
         _audio_label_filter(
             n + i,
             i,
-            visual_duration_ms=durations_ms[i] if slide.reading_pause_ms > 0 else None,
+            visual_duration_ms=audio_pad_durations_ms[i] if slide.reading_pause_ms > 0 else None,
         )
         for i, slide in enumerate(slides)
     ]
     xfade_filter, video_label = _video_xfade_chain(n, transition, transition_duration_ms, offsets_ms)
-    audio_filter, audio_label = _audio_acrossfade_chain(n, transition_duration_ms)
+    if avoid_voice_overlap:
+        audio_filter, audio_label = _audio_concat_chain(n)
+    else:
+        audio_filter, audio_label = _audio_acrossfade_chain(n, transition_duration_ms)
     sub_filter, final_video_label = _subtitle_filter(
         srt_path, video_label, font_size, resolution, margin_v=subtitle_margin_v
     )
@@ -753,6 +787,7 @@ def compose_video(
     avatar_size: str = DEFAULT_AVATAR_SIZE,
     avatar_margin: int = DEFAULT_AVATAR_MARGIN,
     enable_ken_burns: bool = DEFAULT_ENABLE_KEN_BURNS,
+    avoid_voice_overlap: bool = DEFAULT_AVOID_VOICE_OVERLAP,
 ) -> None:
     if not slides:
         raise VideoComposeError("slides must not be empty")
@@ -796,6 +831,27 @@ def compose_video(
     transition_duration_ms = _effective_transition_ms(visual_durations_ms, transition_duration_ms)
     offsets_ms = _compute_slide_offsets(visual_durations_ms, transition_duration_ms)
 
+    # avoid_voice_overlap: audio can no longer borrow transition_duration_ms
+    # back from the next slide's start the way the video crossfade does, so
+    # its own offsets are a plain concatenation (transition_ms=0 reproduces
+    # exactly that — no slide's audio starts before the previous one, plus
+    # its own reading pause, has fully finished). The video crossfade chain
+    # itself is untouched (still uses offsets_ms/visual_durations_ms above)
+    # — only the *last* slide's own on-screen hold time is stretched by
+    # however much shorter the crossfade-compressed video would otherwise
+    # be than the now-uncompressed audio, so the picture simply holds until
+    # the audio (which is definitionally longer whenever there's more than
+    # one slide) finishes, instead of the video ending first and the audio
+    # being cut off.
+    video_durations_ms = visual_durations_ms
+    cue_transition_ms = transition_duration_ms
+    if avoid_voice_overlap and len(slides) > 1:
+        cue_transition_ms = 0
+        uncompressed_total_ms = _total_duration_ms(visual_durations_ms, 0)
+        compressed_total_ms = _total_duration_ms(visual_durations_ms, transition_duration_ms)
+        video_durations_ms = list(visual_durations_ms)
+        video_durations_ms[-1] += uncompressed_total_ms - compressed_total_ms
+
     # A per-job custom dictionary needs its own isolated jieba.Tokenizer (see
     # wordseg.py) — the shared default segmenter otherwise covers every job
     # that doesn't supply one, so it's not rebuilt from scratch here.
@@ -807,7 +863,7 @@ def compose_video(
     # pause before it) — but the cues *within* a slide only ever span
     # slide.chunks, which is real narration timing untouched by the pause,
     # so captions still end exactly at the real narration end.
-    cues = _build_cues(slides, visual_durations_ms, transition_duration_ms, word_segmenter)
+    cues = _build_cues(slides, visual_durations_ms, cue_transition_ms, word_segmenter)
     with open(out_srt_path, "w", encoding="utf-8", newline="") as f:
         f.write(cues_to_srt(cues))
 
@@ -819,7 +875,7 @@ def compose_video(
 
         cmd = _build_ffmpeg_command(
             slides,
-            visual_durations_ms,
+            video_durations_ms,
             offsets_ms,
             out_srt_path,
             core_output,
@@ -833,6 +889,8 @@ def compose_video(
             avatar_size=avatar_size,
             avatar_margin=avatar_margin,
             enable_ken_burns=enable_ken_burns,
+            avoid_voice_overlap=avoid_voice_overlap,
+            audio_pad_durations_ms=visual_durations_ms,
         )
         _run_ffmpeg(cmd, "slide/transition/subtitle composition")
 

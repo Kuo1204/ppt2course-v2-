@@ -572,3 +572,76 @@ def test_ken_burns_enabled_still_matches_expected_duration_and_resolution_real_f
     srt_text = open(out_srt, encoding="utf-8").read()
     assert "你好嗎" in srt_text
     assert "我很好" in srt_text
+
+
+def test_avoid_voice_overlap_produces_a_real_gap_and_matches_pure_concat_length_real_ffmpeg(
+    tmp_path,
+):
+    # Real end-to-end proof: with avoid_voice_overlap, slide 2's narration
+    # never starts until slide 1's has completely finished (no crossfade
+    # audio blend), and the total rendered length is the *uncompressed*
+    # sum of both slides' real narration -- longer than a plain crossfade
+    # render of the same two clips by exactly the transition duration.
+    voice = "zh-TW-HsiaoChenNeural"
+    resolution = (640, 480)
+    transition_ms = 500
+
+    img1 = str(tmp_path / "slide1.png")
+    img2 = str(tmp_path / "slide2.png")
+    _make_color_image(img1, "red")
+    _make_color_image(img2, "blue")
+    audio1 = str(tmp_path / "slide1.mp3")
+    audio2 = str(tmp_path / "slide2.mp3")
+    chunks1 = synthesize("這是第一頁的旁白內容。", voice, audio1)
+    chunks2 = synthesize("這是第二頁的旁白內容。", voice, audio2)
+    narration_ms = [get_audio_duration_ms(audio1), get_audio_duration_ms(audio2)]
+
+    slides = [
+        SlideVideoInput(image_path=img1, audio_path=audio1, chunks=chunks1),
+        SlideVideoInput(image_path=img2, audio_path=audio2, chunks=chunks2),
+    ]
+
+    out_video = str(tmp_path / "out.mp4")
+    out_srt = str(tmp_path / "out.srt")
+    compose_video(
+        slides, out_video, out_srt,
+        resolution=resolution, fps=24,
+        transition_duration_ms=transition_ms, avoid_voice_overlap=True,
+    )
+
+    assert os.path.exists(out_video)
+
+    # Uncompressed total: no crossfade savings on the audio side at all.
+    expected_total_ms = sum(narration_ms)
+    assert abs(get_audio_duration_ms(out_video) - expected_total_ms) <= 200
+    # Strictly longer than what a normal crossfade render of the exact same
+    # two clips would produce (by ~transition_ms).
+    crossfade_total_ms = _total_duration_ms(
+        narration_ms, _effective_transition_ms(narration_ms, transition_ms)
+    )
+    assert get_audio_duration_ms(out_video) > crossfade_total_ms
+
+    # Slide 2's cues start at (approximately) slide 1's own real narration
+    # length -- pure concatenation, not offset back by transition_ms. Every
+    # cue must start at or after that boundary (never mid-slide-1, which is
+    # what a crossfade-compressed offset would have allowed), and at least
+    # one must start right at it.
+    def _parse_srt_start_ms(line: str) -> int:
+        start_str = line.split(" --> ")[0]
+        h, m, s_ms = start_str.split(":")
+        s, ms = s_ms.split(",")
+        return int(h) * 3600000 + int(m) * 60000 + int(s) * 1000 + int(ms)
+
+    srt_text = open(out_srt, encoding="utf-8").read()
+    cue_starts_ms = [
+        _parse_srt_start_ms(line)
+        for line in srt_text.splitlines()
+        if " --> " in line
+    ]
+    # Allowing up to MIN_GAP_MS (subtitle.py) on top of the boundary itself:
+    # _build_cues nudges a slide's cues later, never earlier, to keep a
+    # minimum gap from the previous slide's last cue -- exactly the
+    # legitimate "never touch/overlap" behavior this feature also relies on.
+    later_cue_starts = [t for t in cue_starts_ms if t >= narration_ms[0] - 50]
+    assert later_cue_starts, cue_starts_ms
+    assert min(later_cue_starts) - narration_ms[0] <= 150

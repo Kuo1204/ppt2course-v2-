@@ -280,6 +280,7 @@ function App() {
   const [targetDurationEnabled, setTargetDurationEnabled] = useState(false);
   const [targetDurationSec, setTargetDurationSec] = useState(120);
   const [enableKenBurns, setEnableKenBurns] = useState(false);
+  const [avoidVoiceOverlap, setAvoidVoiceOverlap] = useState(false);
 
   const [visualAnalysisStatus, setVisualAnalysisStatus] = useState("idle"); // idle | loading | done | error
   const [visualAnalysisError, setVisualAnalysisError] = useState(null);
@@ -698,6 +699,7 @@ function App() {
       if (closingPauseSec > 0) form.append("closing_pause_ms", String(Math.round(closingPauseSec * 1000)));
     }
     if (enableKenBurns) form.append("enable_ken_burns", "true");
+    if (avoidVoiceOverlap) form.append("avoid_voice_overlap", "true");
 
     const confirmedBrollSelections = Object.entries(brollChoices)
       .filter(([, choice]) => choice && choice.asset)
@@ -871,6 +873,8 @@ function App() {
                 setTargetDurationSec={setTargetDurationSec}
                 enableKenBurns={enableKenBurns}
                 setEnableKenBurns={setEnableKenBurns}
+                avoidVoiceOverlap={avoidVoiceOverlap}
+                setAvoidVoiceOverlap={setAvoidVoiceOverlap}
               />
             )}
 
@@ -929,6 +933,7 @@ function App() {
                         closingPauseSec > 0 ? `・結尾 +${closingPauseSec.toFixed(1)}s` : ""
                       }）`,
                   enableKenBurns && "輕微縮放動畫（Ken Burns）",
+                  avoidVoiceOverlap && "轉場後才開口（聲音不重疊）",
                 ].filter(Boolean)}
               />
             )}
@@ -1554,6 +1559,8 @@ function ExtrasStep({
   setTargetDurationSec,
   enableKenBurns,
   setEnableKenBurns,
+  avoidVoiceOverlap,
+  setAvoidVoiceOverlap,
 }) {
   return (
     <>
@@ -1649,6 +1656,8 @@ function ExtrasStep({
           setTargetDurationSec={setTargetDurationSec}
           enableKenBurns={enableKenBurns}
           setEnableKenBurns={setEnableKenBurns}
+          avoidVoiceOverlap={avoidVoiceOverlap}
+          setAvoidVoiceOverlap={setAvoidVoiceOverlap}
         />
       </div>
     </>
@@ -1683,6 +1692,8 @@ function PacingField({
   setTargetDurationSec,
   enableKenBurns,
   setEnableKenBurns,
+  avoidVoiceOverlap,
+  setAvoidVoiceOverlap,
 }) {
   return (
     <div className="field full">
@@ -1759,6 +1770,20 @@ function PacingField({
         />
         輕微縮放動畫（Ken Burns，讓靜態畫面不那麼死板）
       </label>
+
+      <label className="pacing-toggle" style={{ marginTop: 10 }}>
+        <input
+          type="checkbox"
+          checked={avoidVoiceOverlap}
+          onChange={(e) => setAvoidVoiceOverlap(e.target.checked)}
+        />
+        轉場後才開口（避免上一頁的聲音跟下一頁疊在一起）
+      </label>
+      {avoidVoiceOverlap && (
+        <p className="hint" style={{ margin: "6px 0 0" }}>
+          畫面轉場動畫照舊播放，但下一頁的旁白會等上一頁完全講完（含閱讀停頓）才開始出聲；整支影片的總長度會因此變長，不會再因為轉場而縮短。
+        </p>
+      )}
     </div>
   );
 }

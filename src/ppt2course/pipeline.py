@@ -140,7 +140,10 @@ def _avatar_overlays_for_slide(
 
 
 def _reading_pauses_for_target_duration(
-    narration_durations_ms: list[int], transition_duration_ms: int, target_duration_ms: int
+    narration_durations_ms: list[int],
+    transition_duration_ms: int,
+    target_duration_ms: int,
+    avoid_voice_overlap: bool = False,
 ) -> tuple[list[int], bool]:
     """Decide each slide's reading_pause_ms so the rendered video lands as
     close as possible to ``target_duration_ms``, using only reading-pause
@@ -160,6 +163,12 @@ def _reading_pauses_for_target_duration(
         narration_durations_ms, transition_duration_ms
     )
     narration_only_total_ms = _total_duration_ms(narration_durations_ms, effective_transition_ms)
+    if avoid_voice_overlap:
+        # compose_video's avoid_voice_overlap no longer lets narration audio
+        # borrow transition_duration_ms back from the next slide at each of
+        # the n-1 transitions — the floor this video can't shrink below is
+        # that much longer than the plain crossfade estimate above.
+        narration_only_total_ms += (n - 1) * effective_transition_ms
     slack_ms = target_duration_ms - narration_only_total_ms
 
     if slack_ms <= 0:
@@ -224,6 +233,7 @@ def run_pipeline(
     closing_pause_ms: int = 0,
     target_duration_ms: int | None = None,
     enable_ken_burns: bool = DEFAULT_ENABLE_KEN_BURNS,
+    avoid_voice_overlap: bool = False,
 ) -> dict[str, str | int]:
     try:
         slides = parse_ppt(pptx_path)
@@ -302,7 +312,10 @@ def run_pipeline(
         # silently fight each other over the same slide.
         narration_durations_ms = [get_audio_duration_ms(si.audio_path) for si in slide_inputs]
         pauses_ms, target_duration_reachable = _reading_pauses_for_target_duration(
-            narration_durations_ms, transition_duration_ms, target_duration_ms
+            narration_durations_ms,
+            transition_duration_ms,
+            target_duration_ms,
+            avoid_voice_overlap=avoid_voice_overlap,
         )
         slide_inputs = [
             dataclasses.replace(si, reading_pause_ms=p) for si, p in zip(slide_inputs, pauses_ms)
@@ -344,6 +357,7 @@ def run_pipeline(
             avatar_size=avatar_size,
             avatar_margin=avatar_margin,
             enable_ken_burns=enable_ken_burns,
+            avoid_voice_overlap=avoid_voice_overlap,
         )
     except VideoComposeError as exc:
         raise PipelineError(f"video composition failed: {exc}") from exc

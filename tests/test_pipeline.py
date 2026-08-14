@@ -5,7 +5,12 @@ import pytest
 
 from ppt2course.avatar import AvatarAssetSet, default_asset_set
 from ppt2course.export import ExportError
-from ppt2course.pipeline import DEFAULT_SILENT_DURATION_MS, PipelineError, run_pipeline
+from ppt2course.pipeline import (
+    DEFAULT_SILENT_DURATION_MS,
+    PipelineError,
+    _reading_pauses_for_target_duration,
+    run_pipeline,
+)
 from ppt2course.script_gen import ScriptGenerationError, ScriptMode
 from ppt2course.subtitle import TimedChunk
 from ppt2course.tts import TtsError
@@ -859,3 +864,72 @@ def test_enable_ken_burns_forwarded_to_compose_video(tmp_path):
                                     )
 
     assert mock_compose.call_args.kwargs["enable_ken_burns"] is True
+
+
+# ---- avoid_voice_overlap ----
+
+
+def test_avoid_voice_overlap_forwarded_to_compose_video(tmp_path):
+    slides = _slides(1)
+    with patch("ppt2course.pipeline.parse_ppt", return_value=slides):
+        with patch("ppt2course.pipeline.generate_script", return_value=["講稿"]):
+            with patch("ppt2course.pipeline.clean_script", side_effect=lambda t: t):
+                with patch(
+                    "ppt2course.pipeline.synthesize", return_value=[TimedChunk("x", 0, 1000)]
+                ):
+                    with patch("ppt2course.pipeline.compose_video") as mock_compose:
+                        with patch(
+                            "ppt2course.pipeline.export_outputs",
+                            return_value={"mp4": "a", "srt": "b", "docx": "c"},
+                        ):
+                            with patch("ppt2course.pipeline.os.path.getsize", return_value=1234):
+                                with patch(
+                                    "ppt2course.pipeline.get_audio_duration_ms", return_value=1000
+                                ):
+                                    run_pipeline(
+                                        "deck.pptx", ["img1.png"],
+                                        str(tmp_path / "work"), str(tmp_path / "out"), "課程",
+                                        ScriptMode.NOTES, "zh-TW-HsiaoChenNeural",
+                                        avoid_voice_overlap=True,
+                                    )
+
+    assert mock_compose.call_args.kwargs["avoid_voice_overlap"] is True
+
+
+def test_reading_pauses_for_target_duration_avoid_voice_overlap_raises_the_floor():
+    # Same narration/transition inputs, with and without avoid_voice_overlap
+    # -- the floor (and so how much slack is left for reading pauses) must
+    # be exactly (n-1)*effective_transition_ms higher when audio no longer
+    # borrows transition time back from the next slide.
+    narration = [4000, 3000, 5000]
+    transition_ms = 500
+
+    pauses_without, reachable_without = _reading_pauses_for_target_duration(
+        narration, transition_ms, target_duration_ms=13000
+    )
+    pauses_with, reachable_with = _reading_pauses_for_target_duration(
+        narration, transition_ms, target_duration_ms=13000, avoid_voice_overlap=True
+    )
+
+    assert reachable_without is True
+    assert sum(pauses_without) > 0
+    # (3-1)*500 = 1000ms less slack available -> either less total pause or
+    # unreachable, never *more* pause than the crossfade estimate.
+    assert sum(pauses_with) <= sum(pauses_without)
+
+
+def test_reading_pauses_for_target_duration_avoid_voice_overlap_matches_manual_floor():
+    narration = [2000, 1000]
+    transition_ms = 500
+    # floor without avoid_voice_overlap: offsets=[0,1500]+1000=2500
+    # floor with avoid_voice_overlap: 2500 + (2-1)*500 = 3000
+    pauses, reachable = _reading_pauses_for_target_duration(
+        narration, transition_ms, target_duration_ms=3000, avoid_voice_overlap=True
+    )
+    assert reachable is True
+    assert pauses == [0, 0]  # exactly at the floor, no slack left over
+
+    pauses_short, reachable_short = _reading_pauses_for_target_duration(
+        narration, transition_ms, target_duration_ms=2999, avoid_voice_overlap=True
+    )
+    assert reachable_short is False

@@ -188,6 +188,7 @@ def create_app(
         closing_pause_ms: int = Form(0),
         target_duration_ms: int | None = Form(None),
         enable_ken_burns: bool = Form(DEFAULT_ENABLE_KEN_BURNS),
+        avoid_voice_overlap: bool = Form(False),
     ):
         try:
             mode = ScriptMode[script_mode]
@@ -300,6 +301,7 @@ def create_app(
             closing_pause_ms=closing_pause_ms,
             target_duration_ms=target_duration_ms,
             enable_ken_burns=enable_ken_burns,
+            avoid_voice_overlap=avoid_voice_overlap,
         )
         return {"job_id": job_id}
 

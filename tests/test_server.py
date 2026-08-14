@@ -427,6 +427,7 @@ def test_create_job_defaults_pacing_settings(tmp_path):
     assert calls[0]["closing_pause_ms"] == 0
     assert calls[0]["target_duration_ms"] is None
     assert calls[0]["enable_ken_burns"] is False
+    assert calls[0]["avoid_voice_overlap"] is False
 
 
 def test_create_job_forwards_pacing_settings(tmp_path):
@@ -444,6 +445,7 @@ def test_create_job_forwards_pacing_settings(tmp_path):
             closing_pause_ms="2000",
             target_duration_ms="60000",
             enable_ken_burns="true",
+            avoid_voice_overlap="true",
         ),
         files=_upload_files(),
     )
@@ -453,6 +455,7 @@ def test_create_job_forwards_pacing_settings(tmp_path):
     assert calls[0]["closing_pause_ms"] == 2000
     assert calls[0]["target_duration_ms"] == 60000
     assert calls[0]["enable_ken_burns"] is True
+    assert calls[0]["avoid_voice_overlap"] is True
 
 
 def test_create_job_rejects_negative_reading_pause_ms(tmp_path):
