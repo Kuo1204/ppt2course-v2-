@@ -10,8 +10,11 @@ import pytest
 from PIL import Image
 
 from ppt2course.audio_duration import get_audio_duration_ms
+from ppt2course.avatar import default_asset_set
 from ppt2course.tts import synthesize
 from ppt2course.video import (
+    DEFAULT_AVATAR_MARGIN,
+    AvatarOverlay,
     BrollOverlay,
     SlideVideoInput,
     _compute_slide_offsets,
@@ -384,3 +387,89 @@ def test_broll_overlay_swaps_picture_without_moving_audio_or_subtitles_real_ffmp
     assert _is_green(before)
     assert _is_red(during)
     assert _is_green(after)
+
+
+def test_avatar_overlay_composites_without_moving_audio_or_subtitles_real_ffmpeg(tmp_path):
+    # Real end-to-end proof of the avatar promise: the bundled placeholder
+    # character actually appears in its corner during [start_ms, end_ms) and
+    # disappears after, while narration audio, subtitle cues, and total
+    # video length are byte-for-byte identical to the same job with no
+    # avatar at all.
+    voice = "zh-TW-HsiaoChenNeural"
+    resolution = (640, 480)
+
+    img1 = str(tmp_path / "slide1.png")
+    _make_color_image(img1, "green")
+
+    audio1 = str(tmp_path / "slide1.mp3")
+    chunks1 = synthesize("這是一段比較長的旁白，用來確認頭像出現的時候聲音完全不受影響。", voice, audio1)
+    duration_ms = get_audio_duration_ms(audio1)
+    assert duration_ms > 2000
+
+    avatar_start_ms = 800
+    avatar_end_ms = 1600
+    avatar_path = default_asset_set().idle
+
+    def _render(with_avatar: bool, name: str) -> tuple[str, str]:
+        avatar_overlays = (
+            (AvatarOverlay(image_path=avatar_path, start_ms=avatar_start_ms, end_ms=avatar_end_ms),)
+            if with_avatar
+            else ()
+        )
+        slide = SlideVideoInput(
+            image_path=img1, audio_path=audio1, chunks=chunks1, avatar_overlays=avatar_overlays
+        )
+        out_video = str(tmp_path / f"out_{name}.mp4")
+        out_srt = str(tmp_path / f"out_{name}.srt")
+        # "right" (vertically centered), not the bottom_right default: the
+        # burned-in subtitle band also lives at the bottom of the frame, so
+        # sampling a bottom-anchored avatar position would pick up subtitle
+        # glyph pixels instead of the avatar itself.
+        compose_video(
+            [slide], out_video, out_srt, resolution=resolution, fps=24, avatar_position="right"
+        )
+        return out_video, out_srt
+
+    video_without, srt_without = _render(False, "without")
+    video_with, srt_with = _render(True, "with")
+
+    # Audio/subtitles: completely unaffected by the avatar.
+    assert open(srt_without, encoding="utf-8").read() == open(srt_with, encoding="utf-8").read()
+    assert abs(get_audio_duration_ms(video_without) - get_audio_duration_ms(video_with)) <= 50
+
+    def _sample(video_path: str, at_seconds: float, xy: tuple[int, int]) -> tuple[int, int, int]:
+        frame_path = str(tmp_path / f"frame_{os.path.basename(video_path)}_{at_seconds}.png")
+        subprocess.run(
+            ["ffmpeg", "-y", "-ss", str(at_seconds), "-i", video_path, "-frames:v", "1", frame_path],
+            check=True, capture_output=True,
+        )
+        return Image.open(frame_path).convert("RGB").getpixel(xy)
+
+    # Mirrors video.py's "small" size fraction (0.28 of frame height) and the
+    # "right" position formula, to land inside the character's opaque blue
+    # torso (not the transparent background around it, and not the subtitle
+    # band at the bottom of the frame).
+    width, height = resolution
+    avatar_h = int(height * 0.28)
+    avatar_w = int(avatar_h * 800 / 960)  # bundled PNGs are 800x960
+    ox = width - avatar_w - DEFAULT_AVATAR_MARGIN
+    oy = (height - avatar_h) / 2
+    sample_xy = (int(ox + avatar_w * 0.5), int(oy + avatar_h * 0.85))
+
+    def _is_green(px: tuple[int, int, int]) -> bool:
+        r, g, b = px
+        return g > r + 40 and g > b + 40
+
+    def _is_avatar_blue(px: tuple[int, int, int]) -> bool:
+        r, g, b = px
+        return b > r + 20 and b > g
+
+    before = _sample(video_with, avatar_start_ms / 2 / 1000, sample_xy)
+    during = _sample(video_with, (avatar_start_ms + avatar_end_ms) / 2 / 1000, sample_xy)
+    after = _sample(video_with, (avatar_end_ms + duration_ms) / 2 / 1000, sample_xy)
+    always_green = _sample(video_without, (avatar_start_ms + avatar_end_ms) / 2 / 1000, sample_xy)
+
+    assert _is_green(before)
+    assert _is_avatar_blue(during)
+    assert _is_green(after)
+    assert _is_green(always_green)  # same spot, no avatar at all -> never changes

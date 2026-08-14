@@ -9,7 +9,14 @@ falling back to a partial result — consistent with every module's own
 import os
 import subprocess
 
-from ppt2course.audio_duration import get_audio_duration_ms
+from ppt2course.audio_duration import AudioDurationError, get_audio_duration_ms
+from ppt2course.avatar import (
+    DEFAULT_AVATAR_MODE,
+    AvatarAssetSet,
+    build_avatar_track,
+    default_asset_set,
+    should_show_avatar,
+)
 from ppt2course.export import ExportError, export_outputs
 from ppt2course.script_cleaner import clean_script
 from ppt2course.script_gen import (
@@ -21,6 +28,9 @@ from ppt2course.script_gen import (
 from ppt2course.tts import DEFAULT_RATE, DEFAULT_VOLUME, TtsError, synthesize
 from ppt2course.upload import PptParseError, parse_ppt
 from ppt2course.video import (
+    DEFAULT_AVATAR_MARGIN,
+    DEFAULT_AVATAR_POSITION,
+    DEFAULT_AVATAR_SIZE,
     DEFAULT_BGM_VOLUME,
     DEFAULT_FONT_SIZE,
     DEFAULT_FPS,
@@ -32,6 +42,7 @@ from ppt2course.video import (
     DEFAULT_SUBTITLE_MARGIN_V,
     DEFAULT_TRANSITION,
     DEFAULT_TRANSITION_DURATION_MS,
+    AvatarOverlay,
     BrollOverlay,
     SlideVideoInput,
     VideoComposeError,
@@ -81,6 +92,43 @@ def _broll_overlays_for_slide(
     return tuple(overlays)
 
 
+def _avatar_overlays_for_slide(
+    slide_number: int,
+    script_text: str,
+    chunks: list,
+    mode: str,
+    custom_slide_numbers: tuple[int, ...],
+    asset_set: AvatarAssetSet,
+    get_duration_ms,
+) -> tuple[AvatarOverlay, ...]:
+    """Build this slide's avatar mouth-flap overlays, or none at all if the
+    chosen mode skips this slide. ``get_duration_ms`` is a zero-arg callable
+    for the same reason as ``_broll_overlays_for_slide``'s: a slide the
+    avatar mode doesn't touch never pays for an extra ffprobe call.
+
+    Never raises — an unexpected chunk/asset problem degrades to "no avatar
+    on this slide" rather than failing the whole job, matching every other
+    optional visual add-on in this pipeline.
+    """
+    if not should_show_avatar(mode, slide_number, script_text, custom_slide_numbers):
+        return ()
+
+    try:
+        duration_ms = get_duration_ms()
+        segments = build_avatar_track(chunks, duration_ms)
+        return tuple(
+            AvatarOverlay(
+                image_path=asset_set.path_for(seg.state),
+                start_ms=seg.start_ms,
+                end_ms=seg.end_ms,
+            )
+            for seg in segments
+            if seg.end_ms > seg.start_ms
+        )
+    except (AudioDurationError, VideoComposeError):
+        return ()
+
+
 def _generate_silent_audio(out_path: str, duration_ms: int) -> None:
     cmd = [
         "ffmpeg", "-y",
@@ -124,6 +172,12 @@ def run_pipeline(
     outro_path: str | None = None,
     custom_dict_path: str | None = None,
     broll_selections: list[dict] | None = None,
+    avatar_mode: str = DEFAULT_AVATAR_MODE,
+    avatar_position: str = DEFAULT_AVATAR_POSITION,
+    avatar_size: str = DEFAULT_AVATAR_SIZE,
+    avatar_margin: int = DEFAULT_AVATAR_MARGIN,
+    avatar_custom_slides: list[int] | None = None,
+    avatar_asset_set: AvatarAssetSet | None = None,
 ) -> dict[str, str | int]:
     try:
         slides = parse_ppt(pptx_path)
@@ -146,6 +200,9 @@ def run_pipeline(
 
     os.makedirs(work_dir, exist_ok=True)
 
+    resolved_avatar_custom_slides = tuple(avatar_custom_slides or ())
+    resolved_avatar_asset_set = avatar_asset_set or default_asset_set()
+
     slide_inputs = []
     for slide, image_path, script_text in zip(slides, image_paths, cleaned_scripts):
         audio_path = os.path.join(work_dir, f"slide_{slide.index:03d}.mp3")
@@ -164,12 +221,22 @@ def run_pipeline(
         broll_overlays = _broll_overlays_for_slide(
             slide.index, broll_selections or [], lambda p=audio_path: get_audio_duration_ms(p)
         )
+        avatar_overlays = _avatar_overlays_for_slide(
+            slide.index,
+            script_text,
+            chunks,
+            avatar_mode,
+            resolved_avatar_custom_slides,
+            resolved_avatar_asset_set,
+            lambda p=audio_path: get_audio_duration_ms(p),
+        )
         slide_inputs.append(
             SlideVideoInput(
                 image_path=image_path,
                 audio_path=audio_path,
                 chunks=chunks,
                 broll_overlays=broll_overlays,
+                avatar_overlays=avatar_overlays,
             )
         )
 
@@ -197,6 +264,9 @@ def run_pipeline(
             intro_path=intro_path,
             outro_path=outro_path,
             custom_dict_path=custom_dict_path,
+            avatar_position=avatar_position,
+            avatar_size=avatar_size,
+            avatar_margin=avatar_margin,
         )
     except VideoComposeError as exc:
         raise PipelineError(f"video composition failed: {exc}") from exc

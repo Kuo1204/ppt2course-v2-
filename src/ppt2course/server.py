@@ -28,6 +28,10 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
+from ppt2course.avatar import (
+    AVATAR_MODES,
+    DEFAULT_AVATAR_MODE,
+)
 from ppt2course.jobs import JobManager, JobStatus
 from ppt2course.media_search import DEFAULT_CANDIDATE_LIMIT, search_pexels
 from ppt2course.pptx_preview import DEFAULT_THUMBNAIL_WIDTH, PptxPreviewError, render_pptx_thumbnails
@@ -42,6 +46,11 @@ from ppt2course.timeline_models import VisualAssetType
 from ppt2course.tts import DEFAULT_RATE, DEFAULT_VOLUME, TtsError, synthesize, synthesize_preview
 from ppt2course.upload import PptParseError, parse_ppt
 from ppt2course.video import (
+    AVATAR_POSITIONS,
+    AVATAR_SIZES,
+    DEFAULT_AVATAR_MARGIN,
+    DEFAULT_AVATAR_POSITION,
+    DEFAULT_AVATAR_SIZE,
     DEFAULT_BGM_VOLUME,
     DEFAULT_FONT_SIZE,
     DEFAULT_FPS,
@@ -169,6 +178,11 @@ def create_app(
         intro: UploadFile | None = File(None),
         outro: UploadFile | None = File(None),
         broll_selections: str | None = Form(None),
+        avatar_mode: str = Form(DEFAULT_AVATAR_MODE),
+        avatar_position: str = Form(DEFAULT_AVATAR_POSITION),
+        avatar_size: str = Form(DEFAULT_AVATAR_SIZE),
+        avatar_margin: int = Form(DEFAULT_AVATAR_MARGIN),
+        avatar_custom_slides: str | None = Form(None),
     ):
         try:
             mode = ScriptMode[script_mode]
@@ -180,7 +194,28 @@ def create_app(
                 status_code=400, detail=f"invalid logo_position: {logo_position}"
             )
 
+        if avatar_mode not in AVATAR_MODES:
+            raise HTTPException(status_code=400, detail=f"invalid avatar_mode: {avatar_mode}")
+        if avatar_position not in AVATAR_POSITIONS:
+            raise HTTPException(
+                status_code=400, detail=f"invalid avatar_position: {avatar_position}"
+            )
+        if avatar_size not in AVATAR_SIZES:
+            raise HTTPException(status_code=400, detail=f"invalid avatar_size: {avatar_size}")
+
         parsed_texts = json.loads(texts) if texts else None
+        try:
+            parsed_avatar_custom_slides = (
+                json.loads(avatar_custom_slides) if avatar_custom_slides else []
+            )
+            if not isinstance(parsed_avatar_custom_slides, list) or not all(
+                isinstance(n, int) for n in parsed_avatar_custom_slides
+            ):
+                raise ValueError
+        except ValueError:
+            raise HTTPException(
+                status_code=400, detail="avatar_custom_slides must be a JSON array of integers"
+            ) from None
 
         job_id = uuid.uuid4().hex
         job_root = os.path.join(data_root, job_id)
@@ -244,6 +279,11 @@ def create_app(
             outro_path=outro_path,
             custom_dict_path=custom_dict_path,
             broll_selections=resolved_broll_selections,
+            avatar_mode=avatar_mode,
+            avatar_position=avatar_position,
+            avatar_size=avatar_size,
+            avatar_margin=avatar_margin,
+            avatar_custom_slides=parsed_avatar_custom_slides,
         )
         return {"job_id": job_id}
 

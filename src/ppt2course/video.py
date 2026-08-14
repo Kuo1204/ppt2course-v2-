@@ -41,6 +41,29 @@ DEFAULT_LOGO_OPACITY = 1.0
 DEFAULT_LOGO_POSITION = "top-right"
 DEFAULT_BGM_VOLUME = 0.2
 
+# ffmpeg overlay= x:y expressions per avatar corner/side, in terms of the
+# overlay filter's own W/H (base video) and w/h (avatar) variables. Distinct
+# from _LOGO_POSITION_OVERLAYS above: the avatar only ever anchors to a
+# bottom corner or a vertically-centered side, matching the four choices the
+# UI exposes (右下/左下/右側/左側) — it never sits in a top corner, which
+# would collide with a typical slide's own title text.
+_AVATAR_POSITION_OVERLAYS = {
+    "bottom_right": ("W-w-{margin}", "H-h-{margin}"),
+    "bottom_left": ("{margin}", "H-h-{margin}"),
+    "right": ("W-w-{margin}", "(H-h)/2"),
+    "left": ("{margin}", "(H-h)/2"),
+}
+AVATAR_POSITIONS = tuple(_AVATAR_POSITION_OVERLAYS)
+DEFAULT_AVATAR_POSITION = "bottom_right"
+
+# Avatar height as a fraction of the output frame's own height; width
+# follows automatically from the source PNG's aspect ratio. "small" keeps a
+# portrait bust from ever competing with the slide content behind it.
+_AVATAR_SIZE_HEIGHT_FRACTION = {"small": 0.28, "medium": 0.40, "large": 0.55}
+AVATAR_SIZES = tuple(_AVATAR_SIZE_HEIGHT_FRACTION)
+DEFAULT_AVATAR_SIZE = "small"
+DEFAULT_AVATAR_MARGIN = 24
+
 # ffmpeg overlay= x:y expressions per corner, in terms of the overlay
 # filter's own W/H (base video) and w/h (logo) variables.
 _LOGO_POSITION_OVERLAYS = {
@@ -89,6 +112,28 @@ class BrollOverlay:
 
 
 @dataclass(frozen=True)
+class AvatarOverlay:
+    """One corner-anchored avatar image swap over this slide, timed against
+    that slide's own audio (0 = the slide's narration start) — same
+    contract as BrollOverlay, and for the same reason: ``compose_video``
+    never reads this when computing ``durations_ms``, offsets, or subtitle
+    cues, so the avatar can only change what's drawn in its corner, never
+    move a frame of narration or subtitle timing.
+    """
+
+    image_path: str
+    start_ms: int
+    end_ms: int
+
+    def __post_init__(self) -> None:
+        if self.start_ms < 0 or self.end_ms <= self.start_ms:
+            raise VideoComposeError(
+                f"avatar overlay must have 0 <= start_ms < end_ms, got "
+                f"start_ms={self.start_ms} end_ms={self.end_ms}"
+            )
+
+
+@dataclass(frozen=True)
 class SlideVideoInput:
     image_path: str
     audio_path: str
@@ -96,6 +141,9 @@ class SlideVideoInput:
     # Optional full-screen B-roll swaps layered over this slide's own image.
     # Empty by default, so every existing caller/test is unaffected.
     broll_overlays: tuple[BrollOverlay, ...] = ()
+    # Optional corner-anchored 2D avatar mouth-flap frames. Empty by
+    # default, so every existing caller/test is unaffected.
+    avatar_overlays: tuple[AvatarOverlay, ...] = ()
 
 
 # The minimum stretch of a slide's own audio that must remain outside any
@@ -223,22 +271,28 @@ def _broll_scale_and_overlay_filters(
     width: int,
     height: int,
     fps: int,
+    prev_label: str | None = None,
+    final_label: str | None = None,
 ) -> list[str]:
     """Build the filter lines that swap each B-roll over slide ``slide_index``
     during its own [start_ms, end_ms) window, on top of that slide's already
-    scaled/padded base image (labeled ``v{slide_index}base``).
+    scaled/padded base image (labeled ``v{slide_index}base`` unless
+    ``prev_label`` overrides it).
 
-    Always ends at label ``v{slide_index}`` — the exact label
-    ``_video_xfade_chain`` already expects — so nothing downstream of this
-    (xfade, subtitles, acrossfade) needs to know B-roll exists at all.
+    Ends at ``final_label`` (default ``v{slide_index}``, the label
+    ``_video_xfade_chain`` expects when nothing comes after B-roll). Callers
+    that still need to layer an avatar overlay on top pass a different
+    ``final_label`` so that stays the true end of this slide's chain
+    instead.
     """
     parts: list[str] = []
-    prev_label = f"v{slide_index}base"
+    prev_label = prev_label or f"v{slide_index}base"
     input_index = first_input_index
     for i, overlay in enumerate(overlays):
         cover_label = f"v{slide_index}broll{i}"
         parts.append(_cover_scale_filter(input_index, cover_label, width, height, fps))
-        out_label = f"v{slide_index}" if i == len(overlays) - 1 else f"v{slide_index}mix{i}"
+        is_last = i == len(overlays) - 1
+        out_label = (final_label or f"v{slide_index}") if is_last else f"v{slide_index}mix{i}"
         start_sec = overlay.start_ms / 1000
         end_sec = overlay.end_ms / 1000
         parts.append(
@@ -246,6 +300,57 @@ def _broll_scale_and_overlay_filters(
             f"[{out_label}]"
         )
         prev_label = out_label
+        input_index += 1
+    return parts
+
+
+def _avatar_fit_filter(index: int, out_label: str, height_px: int, fps: int) -> str:
+    # "fit" (scale to a target height, width follows from the source's own
+    # aspect ratio), not "cover" or "contain" against a fixed box — an
+    # avatar PNG has no frame to fill, it just needs to end up at the right
+    # on-screen size. format=rgba keeps the source PNG's alpha channel
+    # (transparent background) alive through the scale.
+    return f"[{index}:v]format=rgba,scale=-2:{height_px}:flags=lanczos,fps={fps}[{out_label}]"
+
+
+def _avatar_scale_and_overlay_filters(
+    slide_index: int,
+    overlays: tuple[AvatarOverlay, ...],
+    first_input_index: int,
+    prev_label: str,
+    final_label: str,
+    height_px: int,
+    position: str,
+    margin: int,
+    fps: int,
+) -> list[str]:
+    """Same shape as ``_broll_scale_and_overlay_filters``, but fit-scaled to
+    ``height_px`` and anchored to one corner/side via the overlay filter's
+    x/y expressions instead of covering the whole frame.
+    """
+    try:
+        x_expr, y_expr = _AVATAR_POSITION_OVERLAYS[position]
+    except KeyError:
+        raise VideoComposeError(
+            f"unknown avatar_position {position!r}; expected one of {AVATAR_POSITIONS}"
+        ) from None
+    overlay_xy = f"{x_expr}:{y_expr}".format(margin=margin)
+
+    parts: list[str] = []
+    input_index = first_input_index
+    current_label = prev_label
+    for i, overlay in enumerate(overlays):
+        fit_label = f"v{slide_index}avatar{i}"
+        parts.append(_avatar_fit_filter(input_index, fit_label, height_px, fps))
+        is_last = i == len(overlays) - 1
+        out_label = final_label if is_last else f"v{slide_index}avatarmix{i}"
+        start_sec = overlay.start_ms / 1000
+        end_sec = overlay.end_ms / 1000
+        parts.append(
+            f"[{current_label}][{fit_label}]overlay={overlay_xy}:"
+            f"enable='between(t,{start_sec},{end_sec})'[{out_label}]"
+        )
+        current_label = out_label
         input_index += 1
     return parts
 
@@ -335,6 +440,9 @@ def _build_ffmpeg_command(
     fps: int,
     font_size: int,
     subtitle_margin_v: int = DEFAULT_SUBTITLE_MARGIN_V,
+    avatar_position: str = DEFAULT_AVATAR_POSITION,
+    avatar_size: str = DEFAULT_AVATAR_SIZE,
+    avatar_margin: int = DEFAULT_AVATAR_MARGIN,
 ) -> list[str]:
     width, height = resolution
     n = len(slides)
@@ -345,24 +453,67 @@ def _build_ffmpeg_command(
     for slide in slides:
         cmd += ["-i", slide.audio_path]
 
-    # B-roll images are appended last, after every slide image (0..n-1) and
-    # every slide audio (n..2n-1) — so those two existing index ranges never
-    # shift, regardless of which slides have B-roll or how many.
+    try:
+        avatar_height_px = int(height * _AVATAR_SIZE_HEIGHT_FRACTION[avatar_size])
+    except KeyError:
+        raise VideoComposeError(
+            f"unknown avatar_size {avatar_size!r}; expected one of {AVATAR_SIZES}"
+        ) from None
+
+    # B-roll and avatar images are appended last, after every slide image
+    # (0..n-1) and every slide audio (n..2n-1) — so those two existing index
+    # ranges never shift, regardless of which slides have B-roll/avatar or
+    # how many.
     scale_filters: list[str] = []
     next_input_index = 2 * n
     for i, slide in enumerate(slides):
-        if not slide.broll_overlays:
+        has_broll = bool(slide.broll_overlays)
+        has_avatar = bool(slide.avatar_overlays)
+
+        if not has_broll and not has_avatar:
             scale_filters.append(_scale_pad_filter(i, width, height, fps))
             continue
-        scale_filters.append(_scale_pad_filter(i, width, height, fps, out_label=f"v{i}base"))
-        for overlay in slide.broll_overlays:
-            cmd += ["-loop", "1", "-t", str(durations_ms[i] / 1000), "-i", overlay.image_path]
-        scale_filters.extend(
-            _broll_scale_and_overlay_filters(
-                i, slide.broll_overlays, next_input_index, width, height, fps
+
+        base_label = f"v{i}base" if (has_broll or has_avatar) else f"v{i}"
+        scale_filters.append(_scale_pad_filter(i, width, height, fps, out_label=base_label))
+        current_label = base_label
+
+        if has_broll:
+            broll_final_label = f"v{i}brolled" if has_avatar else f"v{i}"
+            for overlay in slide.broll_overlays:
+                cmd += ["-loop", "1", "-t", str(durations_ms[i] / 1000), "-i", overlay.image_path]
+            scale_filters.extend(
+                _broll_scale_and_overlay_filters(
+                    i,
+                    slide.broll_overlays,
+                    next_input_index,
+                    width,
+                    height,
+                    fps,
+                    prev_label=current_label,
+                    final_label=broll_final_label,
+                )
             )
-        )
-        next_input_index += len(slide.broll_overlays)
+            next_input_index += len(slide.broll_overlays)
+            current_label = broll_final_label
+
+        if has_avatar:
+            for overlay in slide.avatar_overlays:
+                cmd += ["-loop", "1", "-t", str(durations_ms[i] / 1000), "-i", overlay.image_path]
+            scale_filters.extend(
+                _avatar_scale_and_overlay_filters(
+                    i,
+                    slide.avatar_overlays,
+                    next_input_index,
+                    prev_label=current_label,
+                    final_label=f"v{i}",
+                    height_px=avatar_height_px,
+                    position=avatar_position,
+                    margin=avatar_margin,
+                    fps=fps,
+                )
+            )
+            next_input_index += len(slide.avatar_overlays)
 
     audio_label_filters = [_audio_label_filter(n + i, i) for i in range(n)]
     xfade_filter, video_label = _video_xfade_chain(n, transition, transition_duration_ms, offsets_ms)
@@ -525,6 +676,9 @@ def compose_video(
     intro_path: str | None = None,
     outro_path: str | None = None,
     custom_dict_path: str | None = None,
+    avatar_position: str = DEFAULT_AVATAR_POSITION,
+    avatar_size: str = DEFAULT_AVATAR_SIZE,
+    avatar_margin: int = DEFAULT_AVATAR_MARGIN,
 ) -> None:
     if not slides:
         raise VideoComposeError("slides must not be empty")
@@ -539,6 +693,12 @@ def compose_video(
             if overlay.end_ms > duration_ms:
                 raise VideoComposeError(
                     f"broll overlay [{overlay.start_ms}, {overlay.end_ms}) falls outside "
+                    f"slide's own audio duration (0, {duration_ms})"
+                )
+        for overlay in slide.avatar_overlays:
+            if overlay.end_ms > duration_ms:
+                raise VideoComposeError(
+                    f"avatar overlay [{overlay.start_ms}, {overlay.end_ms}) falls outside "
                     f"slide's own audio duration (0, {duration_ms})"
                 )
 
@@ -577,6 +737,9 @@ def compose_video(
             fps,
             font_size,
             subtitle_margin_v=subtitle_margin_v,
+            avatar_position=avatar_position,
+            avatar_size=avatar_size,
+            avatar_margin=avatar_margin,
         )
         _run_ffmpeg(cmd, "slide/transition/subtitle composition")
 

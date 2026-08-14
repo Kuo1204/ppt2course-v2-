@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 import pytest
 
+from ppt2course.avatar import AvatarAssetSet, default_asset_set
 from ppt2course.export import ExportError
 from ppt2course.pipeline import DEFAULT_SILENT_DURATION_MS, PipelineError, run_pipeline
 from ppt2course.script_gen import ScriptGenerationError, ScriptMode
@@ -448,3 +449,195 @@ def test_broll_selection_starting_past_audio_duration_is_dropped(tmp_path):
                                     )
 
     assert mock_compose.call_args.args[0][0].broll_overlays == ()
+
+
+# ---- avatar (mouth-flap overlays driven by real per-slide TimedChunk) ----
+# Same invariant as B-roll above: the avatar mode can only ever change which
+# AvatarOverlay objects a slide's SlideVideoInput carries — never its
+# script, audio_path, or how many times synthesize/compose_video is called.
+
+
+def test_avatar_mode_none_default_never_calls_get_audio_duration_ms_per_slide(tmp_path):
+    slides = _slides(1)
+    with patch("ppt2course.pipeline.parse_ppt", return_value=slides):
+        with patch("ppt2course.pipeline.generate_script", return_value=["講稿"]):
+            with patch("ppt2course.pipeline.clean_script", side_effect=lambda t: t):
+                with patch(
+                    "ppt2course.pipeline.synthesize", return_value=[TimedChunk("x", 0, 1000)]
+                ):
+                    with patch("ppt2course.pipeline.compose_video") as mock_compose:
+                        with patch(
+                            "ppt2course.pipeline.export_outputs",
+                            return_value={"mp4": "a", "srt": "b", "docx": "c"},
+                        ):
+                            with patch("ppt2course.pipeline.os.path.getsize", return_value=1234):
+                                with patch(
+                                    "ppt2course.pipeline.get_audio_duration_ms", return_value=1000
+                                ) as mock_duration:
+                                    run_pipeline(
+                                        "deck.pptx", ["img1.png"],
+                                        str(tmp_path / "work"), str(tmp_path / "out"), "課程",
+                                        ScriptMode.NOTES, "zh-TW-HsiaoChenNeural",
+                                    )
+
+    assert mock_compose.call_args.args[0][0].avatar_overlays == ()
+    mock_duration.assert_called_once()  # only export_outputs's video_duration_ms lookup
+
+
+def test_avatar_mode_always_builds_overlays_from_real_chunks(tmp_path):
+    slides = _slides(1)
+    with patch("ppt2course.pipeline.parse_ppt", return_value=slides):
+        with patch("ppt2course.pipeline.generate_script", return_value=["講稿"]):
+            with patch("ppt2course.pipeline.clean_script", side_effect=lambda t: t):
+                with patch(
+                    "ppt2course.pipeline.synthesize", return_value=[TimedChunk("x", 0, 1000)]
+                ):
+                    with patch("ppt2course.pipeline.compose_video") as mock_compose:
+                        with patch(
+                            "ppt2course.pipeline.export_outputs",
+                            return_value={"mp4": "a", "srt": "b", "docx": "c"},
+                        ):
+                            with patch("ppt2course.pipeline.os.path.getsize", return_value=1234):
+                                with patch(
+                                    "ppt2course.pipeline.get_audio_duration_ms", return_value=1000
+                                ):
+                                    run_pipeline(
+                                        "deck.pptx", ["img1.png"],
+                                        str(tmp_path / "work"), str(tmp_path / "out"), "課程",
+                                        ScriptMode.NOTES, "zh-TW-HsiaoChenNeural",
+                                        avatar_mode="always",
+                                    )
+
+    overlays = mock_compose.call_args.args[0][0].avatar_overlays
+    assert len(overlays) == 1
+    assert overlays[0].start_ms == 0
+    assert overlays[0].end_ms == 1000
+    assert overlays[0].image_path == default_asset_set().talk_open
+
+
+def test_avatar_mode_keyframe_skips_slides_with_empty_script(tmp_path):
+    slides = _slides(2)
+    with patch("ppt2course.pipeline.parse_ppt", return_value=slides):
+        with patch("ppt2course.pipeline.generate_script", return_value=["講稿一", "   "]):
+            with patch("ppt2course.pipeline.clean_script", side_effect=lambda t: t):
+                with patch(
+                    "ppt2course.pipeline.synthesize", return_value=[TimedChunk("x", 0, 1000)]
+                ):
+                    with patch(
+                        "ppt2course.pipeline.subprocess.run", return_value=_fake_run_ok()
+                    ):
+                        with patch("ppt2course.pipeline.compose_video") as mock_compose:
+                            with patch(
+                                "ppt2course.pipeline.export_outputs",
+                                return_value={"mp4": "a", "srt": "b", "docx": "c"},
+                            ):
+                                with patch(
+                                    "ppt2course.pipeline.os.path.getsize", return_value=1234
+                                ):
+                                    with patch(
+                                        "ppt2course.pipeline.get_audio_duration_ms",
+                                        return_value=1000,
+                                    ):
+                                        run_pipeline(
+                                            "deck.pptx", ["img1.png", "img2.png"],
+                                            str(tmp_path / "work"), str(tmp_path / "out"), "課程",
+                                            ScriptMode.NOTES, "zh-TW-HsiaoChenNeural",
+                                            avatar_mode="keyframe",
+                                        )
+
+    slide_inputs = mock_compose.call_args.args[0]
+    assert len(slide_inputs[0].avatar_overlays) == 1  # "講稿一" -> has content
+    assert slide_inputs[1].avatar_overlays == ()  # blank script (silent slide) -> skipped
+
+
+def test_avatar_mode_custom_only_shows_on_listed_slides(tmp_path):
+    slides = _slides(2)
+    with patch("ppt2course.pipeline.parse_ppt", return_value=slides):
+        with patch("ppt2course.pipeline.generate_script", return_value=["講稿一", "講稿二"]):
+            with patch("ppt2course.pipeline.clean_script", side_effect=lambda t: t):
+                with patch(
+                    "ppt2course.pipeline.synthesize", return_value=[TimedChunk("x", 0, 1000)]
+                ):
+                    with patch("ppt2course.pipeline.compose_video") as mock_compose:
+                        with patch(
+                            "ppt2course.pipeline.export_outputs",
+                            return_value={"mp4": "a", "srt": "b", "docx": "c"},
+                        ):
+                            with patch("ppt2course.pipeline.os.path.getsize", return_value=1234):
+                                with patch(
+                                    "ppt2course.pipeline.get_audio_duration_ms", return_value=1000
+                                ):
+                                    run_pipeline(
+                                        "deck.pptx", ["img1.png", "img2.png"],
+                                        str(tmp_path / "work"), str(tmp_path / "out"), "課程",
+                                        ScriptMode.NOTES, "zh-TW-HsiaoChenNeural",
+                                        avatar_mode="custom",
+                                        avatar_custom_slides=[2],
+                                    )
+
+    slide_inputs = mock_compose.call_args.args[0]
+    assert slide_inputs[0].avatar_overlays == ()
+    assert len(slide_inputs[1].avatar_overlays) == 1
+
+
+def test_avatar_position_size_margin_forwarded_to_compose_video(tmp_path):
+    slides = _slides(1)
+    with patch("ppt2course.pipeline.parse_ppt", return_value=slides):
+        with patch("ppt2course.pipeline.generate_script", return_value=["講稿"]):
+            with patch("ppt2course.pipeline.clean_script", side_effect=lambda t: t):
+                with patch(
+                    "ppt2course.pipeline.synthesize", return_value=[TimedChunk("x", 0, 1000)]
+                ):
+                    with patch("ppt2course.pipeline.compose_video") as mock_compose:
+                        with patch(
+                            "ppt2course.pipeline.export_outputs",
+                            return_value={"mp4": "a", "srt": "b", "docx": "c"},
+                        ):
+                            with patch("ppt2course.pipeline.os.path.getsize", return_value=1234):
+                                with patch(
+                                    "ppt2course.pipeline.get_audio_duration_ms", return_value=1000
+                                ):
+                                    run_pipeline(
+                                        "deck.pptx", ["img1.png"],
+                                        str(tmp_path / "work"), str(tmp_path / "out"), "課程",
+                                        ScriptMode.NOTES, "zh-TW-HsiaoChenNeural",
+                                        avatar_mode="always",
+                                        avatar_position="left",
+                                        avatar_size="large",
+                                        avatar_margin=8,
+                                    )
+
+    kwargs = mock_compose.call_args.kwargs
+    assert kwargs["avatar_position"] == "left"
+    assert kwargs["avatar_size"] == "large"
+    assert kwargs["avatar_margin"] == 8
+
+
+def test_avatar_asset_set_override_is_used_instead_of_default(tmp_path):
+    slides = _slides(1)
+    custom_assets = AvatarAssetSet(idle="custom_idle.png", talk_open="custom_open.png")
+    with patch("ppt2course.pipeline.parse_ppt", return_value=slides):
+        with patch("ppt2course.pipeline.generate_script", return_value=["講稿"]):
+            with patch("ppt2course.pipeline.clean_script", side_effect=lambda t: t):
+                with patch(
+                    "ppt2course.pipeline.synthesize", return_value=[TimedChunk("x", 0, 1000)]
+                ):
+                    with patch("ppt2course.pipeline.compose_video") as mock_compose:
+                        with patch(
+                            "ppt2course.pipeline.export_outputs",
+                            return_value={"mp4": "a", "srt": "b", "docx": "c"},
+                        ):
+                            with patch("ppt2course.pipeline.os.path.getsize", return_value=1234):
+                                with patch(
+                                    "ppt2course.pipeline.get_audio_duration_ms", return_value=1000
+                                ):
+                                    run_pipeline(
+                                        "deck.pptx", ["img1.png"],
+                                        str(tmp_path / "work"), str(tmp_path / "out"), "課程",
+                                        ScriptMode.NOTES, "zh-TW-HsiaoChenNeural",
+                                        avatar_mode="always",
+                                        avatar_asset_set=custom_assets,
+                                    )
+
+    overlay = mock_compose.call_args.args[0][0].avatar_overlays[0]
+    assert overlay.image_path == "custom_open.png"

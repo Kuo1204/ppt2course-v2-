@@ -5,6 +5,7 @@ import pytest
 from ppt2course.subtitle import TimedChunk
 from ppt2course.video import (
     MIN_SLIDE_HOLD_MS,
+    AvatarOverlay,
     BrollOverlay,
     SlideVideoInput,
     VideoComposeError,
@@ -466,6 +467,169 @@ def test_compose_video_with_broll_produces_identical_srt_to_without_broll(tmp_pa
         )
         slide = SlideVideoInput(
             image_path="s1.png", audio_path="a1.mp3", chunks=chunks, broll_overlays=broll_overlays
+        )
+        with patch("ppt2course.video.shutil.which", return_value="/usr/bin/ffmpeg"):
+            with patch("ppt2course.video.get_audio_duration_ms", return_value=1600):
+                with patch("ppt2course.video.subprocess.run", return_value=FakeResult()):
+                    compose_video([slide], str(tmp_path / "out.mp4"), str(srt_path))
+        return srt_path.read_text(encoding="utf-8")
+
+    srt_without = _run(False, tmp_path / "without.srt")
+    srt_with = _run(True, tmp_path / "with.srt")
+
+    assert srt_without == srt_with
+
+
+# ---- AvatarOverlay ----
+
+def test_avatar_overlay_rejects_end_before_start():
+    with pytest.raises(VideoComposeError):
+        AvatarOverlay(image_path="a.png", start_ms=500, end_ms=500)
+
+
+def test_avatar_overlay_rejects_negative_start():
+    with pytest.raises(VideoComposeError):
+        AvatarOverlay(image_path="a.png", start_ms=-1, end_ms=100)
+
+
+def test_build_ffmpeg_command_with_avatar_adds_extra_input_after_all_slides():
+    slide1 = SlideVideoInput(
+        image_path="s1.png",
+        audio_path="a1.mp3",
+        chunks=[TimedChunk("你好", 0, 800)],
+        avatar_overlays=(AvatarOverlay(image_path="idle.png", start_ms=0, end_ms=2000),),
+    )
+    slide2 = _slide([TimedChunk("謝謝", 0, 700)])
+    cmd = _build_ffmpeg_command(
+        [slide1, slide2],
+        durations_ms=[2000, 1000],
+        offsets_ms=[0, 1500],
+        srt_path="out.srt",
+        out_video_path="out.mp4",
+        transition="fade",
+        transition_duration_ms=500,
+        resolution=(1920, 1080),
+        fps=30,
+        font_size=64,
+    )
+
+    inputs = [cmd[i + 1] for i, arg in enumerate(cmd) if arg == "-i"]
+    assert inputs[:4] == ["s1.png", "img.png", "a1.mp3", "audio.mp3"]
+    assert inputs[4] == "idle.png"
+
+    filter_complex = cmd[cmd.index("-filter_complex") + 1]
+    # "small" (default) at 1080p height -> int(1080 * 0.28) = 302.
+    assert "[4:v]format=rgba,scale=-2:302:flags=lanczos,fps=30[v0avatar0]" in filter_complex
+    assert (
+        "[v0base][v0avatar0]overlay=W-w-24:H-h-24:enable='between(t,0.0,2.0)'[v0]"
+        in filter_complex
+    )
+    # Downstream xfade must still reference plain v0/v1.
+    assert "[v0][v1]xfade=transition=fade:duration=0.5:offset=1.5[vout]" in filter_complex
+
+
+def test_build_ffmpeg_command_avatar_position_and_size_are_configurable():
+    slide = SlideVideoInput(
+        image_path="s1.png",
+        audio_path="a1.mp3",
+        chunks=[TimedChunk("你好", 0, 800)],
+        avatar_overlays=(AvatarOverlay(image_path="idle.png", start_ms=0, end_ms=1000),),
+    )
+    cmd = _build_ffmpeg_command(
+        [slide],
+        durations_ms=[1000],
+        offsets_ms=[0],
+        srt_path="out.srt",
+        out_video_path="out.mp4",
+        transition="fade",
+        transition_duration_ms=500,
+        resolution=(1920, 1080),
+        fps=30,
+        font_size=64,
+        avatar_position="left",
+        avatar_size="large",
+        avatar_margin=10,
+    )
+    filter_complex = cmd[cmd.index("-filter_complex") + 1]
+    assert "scale=-2:594:flags=lanczos" in filter_complex  # int(1080 * 0.55)
+    assert "overlay=10:(H-h)/2:enable=" in filter_complex
+
+
+def test_build_ffmpeg_command_avatar_layers_on_top_of_broll_on_the_same_slide():
+    slide = SlideVideoInput(
+        image_path="s1.png",
+        audio_path="a1.mp3",
+        chunks=[TimedChunk("你好", 0, 800)],
+        broll_overlays=(BrollOverlay(image_path="b.jpg", start_ms=100, end_ms=300),),
+        avatar_overlays=(AvatarOverlay(image_path="idle.png", start_ms=0, end_ms=1000),),
+    )
+    cmd = _build_ffmpeg_command(
+        [slide],
+        durations_ms=[1000],
+        offsets_ms=[0],
+        srt_path="out.srt",
+        out_video_path="out.mp4",
+        transition="fade",
+        transition_duration_ms=500,
+        resolution=(1920, 1080),
+        fps=30,
+        font_size=64,
+    )
+    filter_complex = cmd[cmd.index("-filter_complex") + 1]
+    # B-roll chain ends at an intermediate label (not v0, since avatar comes
+    # after it), and the avatar chain is the one that finally produces v0.
+    assert "[v0base][v0broll0]overlay=enable='between(t,0.1,0.3)'[v0brolled]" in filter_complex
+    assert "[v0brolled][v0avatar0]overlay=" in filter_complex
+    assert "[v0]" in filter_complex.split("[v0brolled][v0avatar0]overlay=")[1][:80]
+
+
+def test_build_ffmpeg_command_without_avatar_is_unchanged():
+    slide1 = _slide([TimedChunk("你好", 0, 800)])
+    slide2 = _slide([TimedChunk("謝謝", 0, 700)])
+    cmd = _build_ffmpeg_command(
+        [slide1, slide2],
+        durations_ms=[2000, 1000],
+        offsets_ms=[0, 1500],
+        srt_path="out.srt",
+        out_video_path="out.mp4",
+        transition="fade",
+        transition_duration_ms=500,
+        resolution=(1920, 1080),
+        fps=30,
+        font_size=64,
+    )
+    filter_complex = cmd[cmd.index("-filter_complex") + 1]
+    assert "avatar" not in filter_complex
+
+
+def test_compose_video_rejects_avatar_overlay_past_slides_own_audio_duration(tmp_path):
+    slide = SlideVideoInput(
+        image_path="s1.png",
+        audio_path="a1.mp3",
+        chunks=[TimedChunk("你好", 0, 800)],
+        avatar_overlays=(AvatarOverlay(image_path="idle.png", start_ms=500, end_ms=1500),),
+    )
+    with patch("ppt2course.video.shutil.which", return_value="/usr/bin/ffmpeg"):
+        with patch("ppt2course.video.get_audio_duration_ms", return_value=1000):
+            with pytest.raises(VideoComposeError):
+                compose_video([slide], str(tmp_path / "out.mp4"), str(tmp_path / "out.srt"))
+
+
+def test_compose_video_with_avatar_produces_identical_srt_to_without_avatar(tmp_path):
+    chunks = [TimedChunk("你好", 0, 800), TimedChunk("。", 800, 800)]
+
+    class FakeResult:
+        returncode = 0
+        stderr = ""
+
+    def _run(with_avatar: bool, srt_path):
+        avatar_overlays = (
+            (AvatarOverlay(image_path="idle.png", start_ms=0, end_ms=1600),)
+            if with_avatar
+            else ()
+        )
+        slide = SlideVideoInput(
+            image_path="s1.png", audio_path="a1.mp3", chunks=chunks, avatar_overlays=avatar_overlays
         )
         with patch("ppt2course.video.shutil.which", return_value="/usr/bin/ffmpeg"):
             with patch("ppt2course.video.get_audio_duration_ms", return_value=1600):

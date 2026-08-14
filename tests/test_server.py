@@ -317,6 +317,98 @@ def test_create_job_skips_malformed_broll_selection(tmp_path):
     assert calls[0]["broll_selections"] == []
 
 
+# ---- avatar_mode / avatar_position / avatar_size / avatar_custom_slides ----
+
+
+def test_create_job_defaults_avatar_mode_to_none(tmp_path):
+    calls = []
+
+    def fake_pipeline(**kwargs):
+        calls.append(kwargs)
+        return {}
+
+    client, manager = _make_client(fake_pipeline, tmp_path)
+    client.post("/api/jobs", data=_upload_form(), files=_upload_files())
+    manager.process_next()
+
+    assert calls[0]["avatar_mode"] == "none"
+    assert calls[0]["avatar_position"] == "bottom_right"
+    assert calls[0]["avatar_size"] == "small"
+    assert calls[0]["avatar_custom_slides"] == []
+
+
+def test_create_job_forwards_avatar_settings(tmp_path):
+    calls = []
+
+    def fake_pipeline(**kwargs):
+        calls.append(kwargs)
+        return {}
+
+    client, manager = _make_client(fake_pipeline, tmp_path)
+    client.post(
+        "/api/jobs",
+        data=_upload_form(
+            avatar_mode="custom",
+            avatar_position="left",
+            avatar_size="large",
+            avatar_margin="10",
+            avatar_custom_slides="[1, 3]",
+        ),
+        files=_upload_files(),
+    )
+    manager.process_next()
+
+    assert calls[0]["avatar_mode"] == "custom"
+    assert calls[0]["avatar_position"] == "left"
+    assert calls[0]["avatar_size"] == "large"
+    assert calls[0]["avatar_margin"] == 10
+    assert calls[0]["avatar_custom_slides"] == [1, 3]
+
+
+def test_create_job_rejects_invalid_avatar_mode(tmp_path):
+    client, _ = _make_client(lambda **kwargs: {}, tmp_path)
+    response = client.post(
+        "/api/jobs", data=_upload_form(avatar_mode="bogus"), files=_upload_files()
+    )
+    assert response.status_code == 400
+
+
+def test_create_job_rejects_invalid_avatar_position(tmp_path):
+    client, _ = _make_client(lambda **kwargs: {}, tmp_path)
+    response = client.post(
+        "/api/jobs", data=_upload_form(avatar_position="top-center"), files=_upload_files()
+    )
+    assert response.status_code == 400
+
+
+def test_create_job_rejects_invalid_avatar_size(tmp_path):
+    client, _ = _make_client(lambda **kwargs: {}, tmp_path)
+    response = client.post(
+        "/api/jobs", data=_upload_form(avatar_size="huge"), files=_upload_files()
+    )
+    assert response.status_code == 400
+
+
+def test_create_job_rejects_malformed_avatar_custom_slides(tmp_path):
+    client, _ = _make_client(lambda **kwargs: {}, tmp_path)
+    response = client.post(
+        "/api/jobs",
+        data=_upload_form(avatar_mode="custom", avatar_custom_slides="not json"),
+        files=_upload_files(),
+    )
+    assert response.status_code == 400
+
+
+def test_create_job_rejects_non_integer_avatar_custom_slides(tmp_path):
+    client, _ = _make_client(lambda **kwargs: {}, tmp_path)
+    response = client.post(
+        "/api/jobs",
+        data=_upload_form(avatar_mode="custom", avatar_custom_slides='["a", "b"]'),
+        files=_upload_files(),
+    )
+    assert response.status_code == 400
+
+
 def test_get_job_status_queued_before_processing(tmp_path):
     client, manager = _make_client(lambda **kwargs: {}, tmp_path)
 

@@ -149,6 +149,27 @@ const SUBTITLE_POSITION_MIN = 2;
 const SUBTITLE_POSITION_MAX = 30;
 const SUBTITLE_POSITION_DEFAULT = 3;
 
+// Mirrors avatar.py's AvatarMode/AVATAR_MODES.
+const AVATAR_MODES = [
+  { value: "none", label: "不使用" },
+  { value: "keyframe", label: "關鍵頁面（有講稿內容的頁面才顯示）" },
+  { value: "always", label: "全程顯示" },
+  { value: "custom", label: "自訂頁面" },
+];
+// Mirrors video.py's AVATAR_POSITIONS.
+const AVATAR_POSITIONS = [
+  { value: "bottom_right", label: "右下" },
+  { value: "bottom_left", label: "左下" },
+  { value: "right", label: "右側" },
+  { value: "left", label: "左側" },
+];
+// Mirrors video.py's AVATAR_SIZES.
+const AVATAR_SIZES = [
+  { value: "small", label: "小" },
+  { value: "medium", label: "中" },
+  { value: "large", label: "大" },
+];
+
 const GEMINI_API_KEY_URL = "https://aistudio.google.com/app/apikey";
 const POLL_INTERVAL_MS = 2000;
 
@@ -247,6 +268,12 @@ function App() {
   const [introFile, setIntroFile] = useState(null);
   const [outroFile, setOutroFile] = useState(null);
   const [customDict, setCustomDict] = useState("");
+
+  const [avatarMode, setAvatarMode] = useState("none");
+  const [avatarPosition, setAvatarPosition] = useState("bottom_right");
+  const [avatarSize, setAvatarSize] = useState("small");
+  // Set of 1-based slide numbers, only used when avatarMode === "custom".
+  const [avatarCustomSlides, setAvatarCustomSlides] = useState([]);
 
   const [visualAnalysisStatus, setVisualAnalysisStatus] = useState("idle"); // idle | loading | done | error
   const [visualAnalysisError, setVisualAnalysisError] = useState(null);
@@ -646,6 +673,15 @@ function App() {
     if (outroFile) form.append("outro", outroFile);
     if (customDict.trim()) form.append("custom_dict", customDict);
 
+    if (avatarMode !== "none") {
+      form.append("avatar_mode", avatarMode);
+      form.append("avatar_position", avatarPosition);
+      form.append("avatar_size", avatarSize);
+      if (avatarMode === "custom") {
+        form.append("avatar_custom_slides", JSON.stringify(avatarCustomSlides));
+      }
+    }
+
     const confirmedBrollSelections = Object.entries(brollChoices)
       .filter(([, choice]) => choice && choice.asset)
       .map(([slideNumber, choice]) => ({
@@ -799,6 +835,15 @@ function App() {
                 setOutroFile={setOutroFile}
                 customDict={customDict}
                 setCustomDict={setCustomDict}
+                avatarMode={avatarMode}
+                setAvatarMode={setAvatarMode}
+                avatarPosition={avatarPosition}
+                setAvatarPosition={setAvatarPosition}
+                avatarSize={avatarSize}
+                setAvatarSize={setAvatarSize}
+                avatarCustomSlides={avatarCustomSlides}
+                setAvatarCustomSlides={setAvatarCustomSlides}
+                slideCount={imageFiles.length}
               />
             )}
 
@@ -846,6 +891,10 @@ function App() {
                     `自訂詞庫（${customDict.split("\n").filter((l) => l.trim()).length} 個詞）`,
                   Object.values(brollChoices).filter((c) => c && c.asset).length > 0 &&
                     `AI 視覺素材（${Object.values(brollChoices).filter((c) => c && c.asset).length} 頁）`,
+                  avatarMode !== "none" &&
+                    `2D 講師 Avatar（${AVATAR_MODES.find((m) => m.value === avatarMode)?.label}・${
+                      AVATAR_POSITIONS.find((p) => p.value === avatarPosition)?.label
+                    }・${AVATAR_SIZES.find((s) => s.value === avatarSize)?.label}）`,
                 ].filter(Boolean)}
               />
             )}
@@ -1452,6 +1501,15 @@ function ExtrasStep({
   setOutroFile,
   customDict,
   setCustomDict,
+  avatarMode,
+  setAvatarMode,
+  avatarPosition,
+  setAvatarPosition,
+  avatarSize,
+  setAvatarSize,
+  avatarCustomSlides,
+  setAvatarCustomSlides,
+  slideCount,
 }) {
   return (
     <>
@@ -1523,8 +1581,111 @@ function ExtrasStep({
         <FileField label="背景音樂" file={bgmFile} onChange={setBgmFile} accept="audio/*" />
         <FileField label="片頭影片" file={introFile} onChange={setIntroFile} accept="video/*" />
         <FileField label="片尾影片" file={outroFile} onChange={setOutroFile} accept="video/*" />
+
+        <AvatarField
+          mode={avatarMode}
+          setMode={setAvatarMode}
+          position={avatarPosition}
+          setPosition={setAvatarPosition}
+          size={avatarSize}
+          setSize={setAvatarSize}
+          customSlides={avatarCustomSlides}
+          setCustomSlides={setAvatarCustomSlides}
+          slideCount={slideCount}
+        />
       </div>
     </>
+  );
+}
+
+// 目前使用系統內建的簡約風格佔位角色（idle/talk_open/talk_close 嘴型會依真實
+// 語音時間點自動切換），尚未支援上傳自訂角色圖檔。
+function AvatarField({
+  mode,
+  setMode,
+  position,
+  setPosition,
+  size,
+  setSize,
+  customSlides,
+  setCustomSlides,
+  slideCount,
+}) {
+  function toggleSlide(n) {
+    setCustomSlides((prev) =>
+      prev.includes(n) ? prev.filter((x) => x !== n) : [...prev, n].sort((a, b) => a - b)
+    );
+  }
+
+  return (
+    <div className="field full">
+      <label htmlFor="avatar-mode-select">2D 講師 Avatar</label>
+      <select
+        id="avatar-mode-select"
+        value={mode}
+        onChange={(e) => setMode(e.target.value)}
+      >
+        {AVATAR_MODES.map((m) => (
+          <option key={m.value} value={m.value}>
+            {m.label}
+          </option>
+        ))}
+      </select>
+      <p className="hint" style={{ margin: "6px 0 0" }}>
+        使用內建的簡約風格佔位角色，嘴型會依這一頁旁白的真實語音時間點自動開合，不會改變任何配音或字幕的時間軸。
+      </p>
+
+      {mode !== "none" && (
+        <div className="field-grid" style={{ marginTop: 10 }}>
+          <div className="field">
+            <label htmlFor="avatar-position-select">位置</label>
+            <select
+              id="avatar-position-select"
+              value={position}
+              onChange={(e) => setPosition(e.target.value)}
+            >
+              {AVATAR_POSITIONS.map((p) => (
+                <option key={p.value} value={p.value}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="field">
+            <label htmlFor="avatar-size-select">大小</label>
+            <select
+              id="avatar-size-select"
+              value={size}
+              onChange={(e) => setSize(e.target.value)}
+            >
+              {AVATAR_SIZES.map((s) => (
+                <option key={s.value} value={s.value}>
+                  {s.label}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {mode === "custom" && slideCount > 0 && (
+            <div className="field full">
+              <label>選擇要顯示 Avatar 的頁面</label>
+              <div className="avatar-slide-picker">
+                {Array.from({ length: slideCount }, (_, i) => i + 1).map((n) => (
+                  <label key={n} className="avatar-slide-picker-item">
+                    <input
+                      type="checkbox"
+                      checked={customSlides.includes(n)}
+                      onChange={() => toggleSlide(n)}
+                    />
+                    第 {n} 頁
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
