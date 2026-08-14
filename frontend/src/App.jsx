@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import QRCode from "qrcode";
 import "./App.css";
 import {
+  analyzeVisuals,
   createJob,
   downloadUrl,
   extractScriptText,
@@ -10,6 +11,7 @@ import {
   fetchVoicePreview,
   generateScriptPreview,
   getJobStatus,
+  searchMedia,
 } from "./api";
 import { parseNumberedScript } from "./scriptParser";
 import { resolveDownloadUrl } from "./urlUtils";
@@ -189,8 +191,16 @@ const STEPS = [
   { n: 2, key: "script", label: "講稿來源" },
   { n: 3, key: "voice", label: "語音與轉場" },
   { n: 4, key: "extras", label: "進階選項" },
-  { n: 5, key: "review", label: "開始製作" },
+  { n: 5, key: "visuals", label: "AI 視覺素材" },
+  { n: 6, key: "review", label: "開始製作" },
 ];
+
+// Slide-local default window for a newly-picked B-roll: starts 2s into the
+// slide's own narration, lasts 4s. Purely a starting point for the user to
+// adjust — the real, authoritative clamp against that slide's actual audio
+// duration happens server-side (pipeline.py), never here.
+const BROLL_DEFAULT_START_SEC = 2;
+const BROLL_DEFAULT_DURATION_SEC = 4;
 
 function useObjectUrls(files) {
   const [urls, setUrls] = useState([]);
@@ -239,6 +249,16 @@ function App() {
   const [outroFile, setOutroFile] = useState(null);
   const [customDict, setCustomDict] = useState("");
 
+  const [visualAnalysisStatus, setVisualAnalysisStatus] = useState("idle"); // idle | loading | done | error
+  const [visualAnalysisError, setVisualAnalysisError] = useState(null);
+  const [visualRecommendations, setVisualRecommendations] = useState([]);
+  const [visualAnalysisWarnings, setVisualAnalysisWarnings] = useState([]);
+  const [pexelsApiKey, setPexelsApiKey] = useState("");
+  // slide_number -> { asset, startSec, durationSec } | undefined ("不使用" or not yet chosen)
+  const [brollChoices, setBrollChoices] = useState({});
+  // slide_number -> { status: idle|loading|done|error, assets, warning }
+  const [mediaSearchBySlide, setMediaSearchBySlide] = useState({});
+
   const [submitting, setSubmitting] = useState(false);
   const [jobId, setJobId] = useState(null);
   const [jobStatus, setJobStatus] = useState(null);
@@ -268,6 +288,19 @@ function App() {
     setScriptPreviewError(null);
   }, [scriptMode, pptxFile, imageFiles.length]);
 
+  // A visual-need analysis (and any B-roll already picked from it) only
+  // makes sense for the exact deck/script it was run against — swapping the
+  // deck or re-doing the script invalidates it the same way the script
+  // preview above gets invalidated.
+  useEffect(() => {
+    setVisualAnalysisStatus("idle");
+    setVisualAnalysisError(null);
+    setVisualRecommendations([]);
+    setVisualAnalysisWarnings([]);
+    setBrollChoices({});
+    setMediaSearchBySlide({});
+  }, [scriptMode, pptxFile, imageFiles.length]);
+
   async function handleGenerateScriptPreview() {
     setScriptPreviewStatus("loading");
     setScriptPreviewError(null);
@@ -286,6 +319,62 @@ function App() {
     } catch (err) {
       setScriptPreviewError(err.message);
       setScriptPreviewStatus("error");
+    }
+  }
+
+  // The one script text per slide currently "in effect" for whichever
+  // script_mode/input path is active — the same text handleSubmit would
+  // send as the job's narration. Returns null while that text isn't fully
+  // resolved yet (e.g. paste-mode markers don't parse, or an AI preview
+  // hasn't been generated), which the visuals step uses to gate analysis
+  // on a script that actually matches what will be narrated.
+  function resolveCurrentTexts() {
+    if (scriptMode === "NOTES") {
+      return pptxNotes.length === imageFiles.length ? pptxNotes : null;
+    }
+    if (textInputMode === "paste") {
+      const result = parseNumberedScript(pasteText, imageFiles.length);
+      return result.texts || null;
+    }
+    if (perSlideTexts.length !== imageFiles.length || perSlideTexts.some((t) => !t.trim())) {
+      return null;
+    }
+    return perSlideTexts;
+  }
+
+  async function handleAnalyzeVisuals() {
+    const texts = resolveCurrentTexts();
+    if (!pptxFile || !texts) return;
+    setVisualAnalysisStatus("loading");
+    setVisualAnalysisError(null);
+    try {
+      const { recommendations, warnings } = await analyzeVisuals({
+        pptxFile,
+        texts,
+        geminiApiKey,
+      });
+      setVisualRecommendations(recommendations);
+      setVisualAnalysisWarnings(warnings || []);
+      setVisualAnalysisStatus("done");
+    } catch (err) {
+      setVisualAnalysisError(err.message);
+      setVisualAnalysisStatus("error");
+    }
+  }
+
+  async function handleSearchMedia(slideNumber, keyword) {
+    setMediaSearchBySlide((prev) => ({
+      ...prev,
+      [slideNumber]: { status: "loading", assets: [], warning: null },
+    }));
+    try {
+      const { assets, warning } = await searchMedia({ keyword, slideNumber, pexelsApiKey });
+      setMediaSearchBySlide((prev) => ({ ...prev, [slideNumber]: { status: "done", assets, warning } }));
+    } catch (err) {
+      setMediaSearchBySlide((prev) => ({
+        ...prev,
+        [slideNumber]: { status: "error", assets: [], warning: err.message },
+      }));
     }
   }
 
@@ -438,6 +527,13 @@ function App() {
     setIntroFile(null);
     setOutroFile(null);
     setCustomDict("");
+    setVisualAnalysisStatus("idle");
+    setVisualAnalysisError(null);
+    setVisualRecommendations([]);
+    setVisualAnalysisWarnings([]);
+    setPexelsApiKey("");
+    setBrollChoices({});
+    setMediaSearchBySlide({});
     setSubmitting(false);
     setScriptPreviewStatus("idle");
     setScriptPreviewError(null);
@@ -547,6 +643,18 @@ function App() {
     if (introFile) form.append("intro", introFile);
     if (outroFile) form.append("outro", outroFile);
     if (customDict.trim()) form.append("custom_dict", customDict);
+
+    const confirmedBrollSelections = Object.entries(brollChoices)
+      .filter(([, choice]) => choice && choice.asset)
+      .map(([slideNumber, choice]) => ({
+        slide_number: Number(slideNumber),
+        download_url: choice.asset.download_url,
+        start_ms: Math.round(choice.startSec * 1000),
+        end_ms: Math.round((choice.startSec + choice.durationSec) * 1000),
+      }));
+    if (confirmedBrollSelections.length > 0) {
+      form.append("broll_selections", JSON.stringify(confirmedBrollSelections));
+    }
 
     setSubmitting(true);
     setFormError(null);
@@ -693,6 +801,25 @@ function App() {
             )}
 
             {currentStep === 5 && (
+              <VisualsStep
+                slideCount={imageFiles.length}
+                thumbUrls={thumbUrls}
+                onAnalyze={handleAnalyzeVisuals}
+                canAnalyze={Boolean(pptxFile) && resolveCurrentTexts() !== null}
+                analysisStatus={visualAnalysisStatus}
+                analysisError={visualAnalysisError}
+                recommendations={visualRecommendations}
+                analysisWarnings={visualAnalysisWarnings}
+                pexelsApiKey={pexelsApiKey}
+                setPexelsApiKey={setPexelsApiKey}
+                mediaSearchBySlide={mediaSearchBySlide}
+                onSearchMedia={handleSearchMedia}
+                brollChoices={brollChoices}
+                setBrollChoices={setBrollChoices}
+              />
+            )}
+
+            {currentStep === 6 && (
               <ReviewStep
                 baseName={baseName}
                 slideCount={imageFiles.length}
@@ -715,6 +842,8 @@ function App() {
                   outroFile && "片尾",
                   customDict.trim() &&
                     `自訂詞庫（${customDict.split("\n").filter((l) => l.trim()).length} 個詞）`,
+                  Object.values(brollChoices).filter((c) => c && c.asset).length > 0 &&
+                    `AI 視覺素材（${Object.values(brollChoices).filter((c) => c && c.asset).length} 頁）`,
                 ].filter(Boolean)}
               />
             )}
@@ -1658,6 +1787,201 @@ function ScriptFileUpload({ onExtracted }) {
   );
 }
 
+function VisualsStep({
+  slideCount,
+  thumbUrls,
+  onAnalyze,
+  canAnalyze,
+  analysisStatus,
+  analysisError,
+  recommendations,
+  analysisWarnings,
+  pexelsApiKey,
+  setPexelsApiKey,
+  mediaSearchBySlide,
+  onSearchMedia,
+  brollChoices,
+  setBrollChoices,
+}) {
+  const recommended = recommendations.filter((r) => r.recommended);
+  const skipped = recommendations.filter((r) => !r.recommended);
+  const confirmedCount = Object.values(brollChoices).filter((c) => c && c.asset).length;
+
+  return (
+    <>
+      <CardHead eyebrow="Step 05" title="AI 視覺素材" trailing={slideCount ? `${slideCount} 頁投影片` : null} />
+      <div className="field-grid">
+        <div className="field full">
+          <p className="hint">
+            AI 會分析每一頁的內容，建議哪些頁面加入額外圖片能提升理解——只有你確認選用的素材才會真的出現在影片裡。
+            這個功能完全選填，時間也不會超出該頁旁白本身的長度，不會影響配音與字幕的時間軸。
+          </p>
+        </div>
+
+        <div className="field full">
+          <label htmlFor="pexels-key-input">
+            Pexels API Key <span className="hint">— 選填，沒有的話搜尋素材時只會顯示提示，不影響其他功能</span>
+          </label>
+          <input
+            id="pexels-key-input"
+            type="password"
+            value={pexelsApiKey}
+            onChange={(e) => setPexelsApiKey(e.target.value)}
+            placeholder="貼上你的 Pexels API Key（可留空）"
+          />
+        </div>
+
+        <GenerateScriptButton
+          label={analysisStatus === "done" ? "重新分析視覺素材建議" : "分析 PPT 並產生視覺建議"}
+          loadingLabel="AI 分析中，請稍候..."
+          disabled={!canAnalyze || analysisStatus === "loading"}
+          status={analysisStatus}
+          error={analysisError}
+          onClick={onAnalyze}
+        />
+
+        {!canAnalyze && (
+          <div className="field full">
+            <p className="status-caption">請先完成上一步「講稿來源」的設定，才能分析視覺素材建議</p>
+          </div>
+        )}
+
+        {analysisStatus === "done" && analysisWarnings.length > 0 && (
+          <div className="field full">
+            {analysisWarnings.map((w, i) => (
+              <p key={i} className="status-caption">
+                {w}
+              </p>
+            ))}
+          </div>
+        )}
+
+        {analysisStatus === "done" && recommended.length === 0 && (
+          <div className="field full">
+            <p className="status-caption">AI 判斷目前每一頁的內容都不需要額外視覺素材，可以直接進入下一步。</p>
+          </div>
+        )}
+
+        {analysisStatus === "done" && recommended.length > 0 && (
+          <div className="field full">
+            <label>
+              建議加入視覺素材的頁面
+              {confirmedCount > 0 && <span className="hint"> — 已選用 {confirmedCount} 頁</span>}
+            </label>
+            <div className="visual-recommendations">
+              {recommended.map((rec) => (
+                <VisualRecommendationCard
+                  key={rec.slide_number}
+                  recommendation={rec}
+                  thumbUrl={thumbUrls[rec.slide_number - 1]}
+                  searchState={mediaSearchBySlide[rec.slide_number]}
+                  onSearch={() => onSearchMedia(rec.slide_number, rec.keywords[0] || rec.title)}
+                  choice={brollChoices[rec.slide_number]}
+                  setChoice={(choice) =>
+                    setBrollChoices((prev) => ({ ...prev, [rec.slide_number]: choice }))
+                  }
+                />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {analysisStatus === "done" && skipped.length > 0 && (
+          <div className="field full">
+            <p className="hint">其餘 {skipped.length} 頁 AI 判斷不需要額外素材，已略過。</p>
+          </div>
+        )}
+      </div>
+    </>
+  );
+}
+
+function VisualRecommendationCard({ recommendation, thumbUrl, searchState, onSearch, choice, setChoice }) {
+  const assets = searchState?.assets || [];
+  const startSec = choice?.startSec ?? BROLL_DEFAULT_START_SEC;
+  const durationSec = choice?.durationSec ?? BROLL_DEFAULT_DURATION_SEC;
+
+  function selectAsset(asset) {
+    setChoice(asset ? { asset, startSec, durationSec } : null);
+  }
+
+  return (
+    <div className="visual-rec-card">
+      <div className="visual-rec-head">
+        {thumbUrl && <img src={thumbUrl} alt="" className="visual-rec-thumb" />}
+        <div>
+          <p className="visual-rec-title">
+            第 {recommendation.slide_number} 頁・{recommendation.title || "（無標題）"}
+          </p>
+          <p className="hint">
+            建議分數 {recommendation.visual_need_score}／100 — {recommendation.reason}
+          </p>
+        </div>
+      </div>
+
+      {assets.length === 0 && (
+        <button
+          type="button"
+          className="btn btn-ghost"
+          onClick={onSearch}
+          disabled={searchState?.status === "loading"}
+        >
+          {searchState?.status === "loading" ? "搜尋素材中..." : "搜尋候選素材"}
+        </button>
+      )}
+
+      {searchState?.warning && <p className="status-caption">{searchState.warning}</p>}
+
+      {assets.length > 0 && (
+        <>
+          <div className="visual-candidates">
+            <label className="visual-candidate visual-candidate-none">
+              <input type="radio" checked={!choice} onChange={() => selectAsset(null)} />
+              不使用
+            </label>
+            {assets.map((asset, i) => (
+              <label key={i} className="visual-candidate">
+                <input
+                  type="radio"
+                  checked={choice?.asset?.preview_url === asset.preview_url}
+                  onChange={() => selectAsset(asset)}
+                />
+                <img src={asset.preview_url} alt={asset.keyword} className="visual-candidate-thumb" />
+              </label>
+            ))}
+          </div>
+
+          {choice?.asset && (
+            <div className="visual-timing">
+              <label>
+                出現時間（秒）
+                <input
+                  type="number"
+                  min={0}
+                  step={0.5}
+                  value={startSec}
+                  onChange={(e) => setChoice({ ...choice, startSec: Number(e.target.value) })}
+                />
+              </label>
+              <label>
+                持續秒數
+                <input
+                  type="number"
+                  min={0.5}
+                  step={0.5}
+                  value={durationSec}
+                  onChange={(e) => setChoice({ ...choice, durationSec: Number(e.target.value) })}
+                />
+              </label>
+              <span className="hint">實際秒數會依該頁旁白長度自動裁切，不會超出旁白範圍</span>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 function ReviewStep({
   baseName,
   slideCount,
@@ -1706,7 +2030,7 @@ function ReviewStep({
 
   return (
     <>
-      <CardHead eyebrow="Step 05" title="確認並開始製作" />
+      <CardHead eyebrow="Step 06" title="確認並開始製作" />
       <dl className="review-list">
         {rows.map(([label, value]) => (
           <div key={label} className="review-row">

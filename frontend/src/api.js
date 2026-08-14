@@ -117,6 +117,48 @@ export async function generateScriptPreview({ pptxFile, scriptMode, geminiApiKey
   return response.json();
 }
 
+export async function analyzeVisuals({ pptxFile, texts, geminiApiKey, geminiModel }) {
+  const form = new FormData();
+  form.append("pptx", pptxFile);
+  form.append("texts", JSON.stringify(texts));
+  if (geminiApiKey) form.append("gemini_api_key", geminiApiKey);
+  if (geminiModel) form.append("gemini_model", geminiModel);
+
+  const response = await fetch(`${API_BASE_URL}/api/analyze-visuals`, {
+    method: "POST",
+    headers: NGROK_BYPASS_HEADERS,
+    body: form,
+  });
+
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.detail || `視覺素材分析失敗 (HTTP ${response.status})`);
+  }
+
+  return response.json();
+}
+
+export async function searchMedia({ keyword, slideNumber, mediaType = "image", pexelsApiKey, limit }) {
+  const params = new URLSearchParams({
+    keyword,
+    slide_number: String(slideNumber),
+    media_type: mediaType,
+  });
+  if (pexelsApiKey) params.set("pexels_api_key", pexelsApiKey);
+  if (limit) params.set("limit", String(limit));
+
+  const response = await fetch(`${API_BASE_URL}/api/media-search?${params.toString()}`, {
+    headers: NGROK_BYPASS_HEADERS,
+  });
+
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(body.detail || `素材搜尋失敗 (HTTP ${response.status})`);
+  }
+
+  return response.json();
+}
+
 export async function fetchVoicePreview(voice, rate, volume) {
   const params = new URLSearchParams();
   if (rate) params.set("rate", rate);
