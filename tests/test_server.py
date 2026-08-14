@@ -226,6 +226,96 @@ def test_create_job_defaults_logo_opacity_to_fully_opaque(tmp_path):
     assert calls[0]["logo_opacity"] == 1.0
 
 
+# ---- broll_selections (confirmed B-roll picks, downloaded server-side) ----
+
+
+def test_create_job_defaults_broll_selections_to_empty_list(tmp_path):
+    calls = []
+
+    def fake_pipeline(**kwargs):
+        calls.append(kwargs)
+        return {}
+
+    client, manager = _make_client(fake_pipeline, tmp_path)
+    client.post("/api/jobs", data=_upload_form(), files=_upload_files())
+    manager.process_next()
+
+    assert calls[0]["broll_selections"] == []
+
+
+def test_create_job_downloads_and_forwards_broll_selection(tmp_path):
+    import os
+
+    calls = []
+
+    def fake_pipeline(**kwargs):
+        calls.append(kwargs)
+        return {}
+
+    client, manager = _make_client(fake_pipeline, tmp_path)
+    selections = json.dumps(
+        [{"slide_number": 1, "download_url": "https://example.com/a.jpg", "start_ms": 100, "end_ms": 500}]
+    )
+    with patch("ppt2course.server.urlopen") as mock_urlopen:
+        mock_urlopen.return_value.__enter__.return_value.read.return_value = b"fake-jpeg-bytes"
+        client.post(
+            "/api/jobs",
+            data=_upload_form(broll_selections=selections),
+            files=_upload_files(),
+        )
+    manager.process_next()
+
+    resolved = calls[0]["broll_selections"]
+    assert len(resolved) == 1
+    assert resolved[0]["slide_number"] == 1
+    assert resolved[0]["start_ms"] == 100
+    assert resolved[0]["end_ms"] == 500
+    assert os.path.exists(resolved[0]["image_path"])
+    assert open(resolved[0]["image_path"], "rb").read() == b"fake-jpeg-bytes"
+
+
+def test_create_job_skips_broll_selection_when_download_fails(tmp_path):
+    calls = []
+
+    def fake_pipeline(**kwargs):
+        calls.append(kwargs)
+        return {}
+
+    client, manager = _make_client(fake_pipeline, tmp_path)
+    selections = json.dumps(
+        [{"slide_number": 1, "download_url": "https://example.com/a.jpg", "start_ms": 100, "end_ms": 500}]
+    )
+    with patch("ppt2course.server.urlopen", side_effect=OSError("network error")):
+        response = client.post(
+            "/api/jobs",
+            data=_upload_form(broll_selections=selections),
+            files=_upload_files(),
+        )
+    manager.process_next()
+
+    assert response.status_code == 200  # job creation itself never fails
+    assert calls[0]["broll_selections"] == []
+
+
+def test_create_job_skips_malformed_broll_selection(tmp_path):
+    calls = []
+
+    def fake_pipeline(**kwargs):
+        calls.append(kwargs)
+        return {}
+
+    client, manager = _make_client(fake_pipeline, tmp_path)
+    response = client.post(
+        "/api/jobs",
+        data=_upload_form(broll_selections="not valid json"),
+        files=_upload_files(),
+    )
+    manager.process_next()
+
+    assert response.status_code == 200
+    assert calls[0]["broll_selections"] == []
+
+
 def test_get_job_status_queued_before_processing(tmp_path):
     client, manager = _make_client(lambda **kwargs: {}, tmp_path)
 

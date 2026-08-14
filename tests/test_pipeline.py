@@ -314,3 +314,137 @@ def test_result_includes_script_char_count_video_size_and_duration(tmp_path):
     assert result["video_size_bytes"] == 12345
     assert result["video_duration_ms"] == 9876
     mock_duration.assert_called_once_with(result["mp4"])
+
+
+# ---- broll_selections (confirmed AI/user-picked B-roll, optional) ----
+# The one invariant that matters here: a B-roll pick can only ever change
+# which BrollOverlay objects a slide's SlideVideoInput carries — never its
+# script, its own audio_path, or how many times synthesize/compose_video is
+# called. get_audio_duration_ms must also stay untouched (and unmocked
+# tests must keep passing) when there is nothing to clamp against.
+
+
+def test_no_broll_selections_never_calls_get_audio_duration_ms_per_slide(tmp_path):
+    # Regression guard: broll_selections=None/[] must not add a real
+    # ffprobe call in the per-slide loop — every existing caller/test that
+    # doesn't mock get_audio_duration_ms would otherwise start hitting a
+    # real subprocess against a file synthesize() never actually wrote.
+    slides = _slides(1)
+    with patch("ppt2course.pipeline.parse_ppt", return_value=slides):
+        with patch("ppt2course.pipeline.generate_script", return_value=["講稿"]):
+            with patch("ppt2course.pipeline.clean_script", side_effect=lambda t: t):
+                with patch(
+                    "ppt2course.pipeline.synthesize", return_value=[TimedChunk("x", 0, 1000)]
+                ):
+                    with patch("ppt2course.pipeline.compose_video") as mock_compose:
+                        with patch(
+                            "ppt2course.pipeline.export_outputs",
+                            return_value={"mp4": "a", "srt": "b", "docx": "c"},
+                        ):
+                            with patch("ppt2course.pipeline.os.path.getsize", return_value=1234):
+                                with patch(
+                                    "ppt2course.pipeline.get_audio_duration_ms", return_value=1000
+                                ) as mock_duration:
+                                    run_pipeline(
+                                        "deck.pptx", ["img1.png"],
+                                        str(tmp_path / "work"), str(tmp_path / "out"), "課程",
+                                        ScriptMode.NOTES, "zh-TW-HsiaoChenNeural",
+                                    )
+
+    slide_inputs = mock_compose.call_args.args[0]
+    assert slide_inputs[0].broll_overlays == ()
+    # Only the one call export_outputs's video_duration_ms lookup makes.
+    mock_duration.assert_called_once()
+
+
+def test_broll_selection_becomes_broll_overlay_on_matching_slide(tmp_path):
+    slides = _slides(2)
+    selections = [
+        {"slide_number": 2, "image_path": "broll.jpg", "start_ms": 200, "end_ms": 800},
+    ]
+    with patch("ppt2course.pipeline.parse_ppt", return_value=slides):
+        with patch("ppt2course.pipeline.generate_script", return_value=["講稿一", "講稿二"]):
+            with patch("ppt2course.pipeline.clean_script", side_effect=lambda t: t):
+                with patch(
+                    "ppt2course.pipeline.synthesize", return_value=[TimedChunk("x", 0, 1000)]
+                ):
+                    with patch("ppt2course.pipeline.compose_video") as mock_compose:
+                        with patch(
+                            "ppt2course.pipeline.export_outputs",
+                            return_value={"mp4": "a", "srt": "b", "docx": "c"},
+                        ):
+                            with patch("ppt2course.pipeline.os.path.getsize", return_value=1234):
+                                with patch(
+                                    "ppt2course.pipeline.get_audio_duration_ms", return_value=1500
+                                ):
+                                    run_pipeline(
+                                        "deck.pptx", ["img1.png", "img2.png"],
+                                        str(tmp_path / "work"), str(tmp_path / "out"), "課程",
+                                        ScriptMode.NOTES, "zh-TW-HsiaoChenNeural",
+                                        broll_selections=selections,
+                                    )
+
+    slide_inputs = mock_compose.call_args.args[0]
+    assert slide_inputs[0].broll_overlays == ()  # slide 1: no matching selection
+    assert len(slide_inputs[1].broll_overlays) == 1
+    overlay = slide_inputs[1].broll_overlays[0]
+    assert overlay.image_path == "broll.jpg"
+    assert overlay.start_ms == 200
+    assert overlay.end_ms == 800
+
+
+def test_broll_selection_end_ms_clamped_to_real_audio_duration(tmp_path):
+    slides = _slides(1)
+    selections = [{"slide_number": 1, "image_path": "broll.jpg", "start_ms": 100, "end_ms": 9999}]
+    with patch("ppt2course.pipeline.parse_ppt", return_value=slides):
+        with patch("ppt2course.pipeline.generate_script", return_value=["講稿"]):
+            with patch("ppt2course.pipeline.clean_script", side_effect=lambda t: t):
+                with patch(
+                    "ppt2course.pipeline.synthesize", return_value=[TimedChunk("x", 0, 1000)]
+                ):
+                    with patch("ppt2course.pipeline.compose_video") as mock_compose:
+                        with patch(
+                            "ppt2course.pipeline.export_outputs",
+                            return_value={"mp4": "a", "srt": "b", "docx": "c"},
+                        ):
+                            with patch("ppt2course.pipeline.os.path.getsize", return_value=1234):
+                                with patch(
+                                    "ppt2course.pipeline.get_audio_duration_ms", return_value=1200
+                                ):
+                                    run_pipeline(
+                                        "deck.pptx", ["img1.png"],
+                                        str(tmp_path / "work"), str(tmp_path / "out"), "課程",
+                                        ScriptMode.NOTES, "zh-TW-HsiaoChenNeural",
+                                        broll_selections=selections,
+                                    )
+
+    overlay = mock_compose.call_args.args[0][0].broll_overlays[0]
+    assert overlay.end_ms == 1200  # clamped down from the requested 9999
+
+
+def test_broll_selection_starting_past_audio_duration_is_dropped(tmp_path):
+    slides = _slides(1)
+    selections = [{"slide_number": 1, "image_path": "broll.jpg", "start_ms": 5000, "end_ms": 6000}]
+    with patch("ppt2course.pipeline.parse_ppt", return_value=slides):
+        with patch("ppt2course.pipeline.generate_script", return_value=["講稿"]):
+            with patch("ppt2course.pipeline.clean_script", side_effect=lambda t: t):
+                with patch(
+                    "ppt2course.pipeline.synthesize", return_value=[TimedChunk("x", 0, 1000)]
+                ):
+                    with patch("ppt2course.pipeline.compose_video") as mock_compose:
+                        with patch(
+                            "ppt2course.pipeline.export_outputs",
+                            return_value={"mp4": "a", "srt": "b", "docx": "c"},
+                        ):
+                            with patch("ppt2course.pipeline.os.path.getsize", return_value=1234):
+                                with patch(
+                                    "ppt2course.pipeline.get_audio_duration_ms", return_value=1200
+                                ):
+                                    run_pipeline(
+                                        "deck.pptx", ["img1.png"],
+                                        str(tmp_path / "work"), str(tmp_path / "out"), "課程",
+                                        ScriptMode.NOTES, "zh-TW-HsiaoChenNeural",
+                                        broll_selections=selections,
+                                    )
+
+    assert mock_compose.call_args.args[0][0].broll_overlays == ()

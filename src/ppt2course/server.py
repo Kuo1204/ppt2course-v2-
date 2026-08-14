@@ -17,6 +17,10 @@ import tempfile
 import uuid
 from dataclasses import asdict
 from pathlib import Path
+# Aliased: fastapi.Request (imported below, used for the ASGI request in the
+# Basic Auth middleware) would otherwise silently shadow this one.
+from urllib.request import Request as UrllibRequest
+from urllib.request import urlopen
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -158,6 +162,7 @@ def create_app(
         bgm: UploadFile | None = File(None),
         intro: UploadFile | None = File(None),
         outro: UploadFile | None = File(None),
+        broll_selections: str | None = Form(None),
     ):
         try:
             mode = ScriptMode[script_mode]
@@ -199,6 +204,8 @@ def create_app(
             with open(custom_dict_path, "w", encoding="utf-8") as f:
                 f.write(custom_dict)
 
+        resolved_broll_selections = _download_broll_selections(broll_selections, uploads_dir)
+
         manager: JobManager = app.state.job_manager
         manager.submit(
             job_id=job_id,
@@ -230,6 +237,7 @@ def create_app(
             intro_path=intro_path,
             outro_path=outro_path,
             custom_dict_path=custom_dict_path,
+            broll_selections=resolved_broll_selections,
         )
         return {"job_id": job_id}
 
@@ -592,6 +600,60 @@ def _render_share_page_not_found() -> str:
         "<h1>找不到這支影片</h1>"
         "<p>連結可能已經過期(產出的檔案只保留 24 小時)，或網址不正確，請確認後再試一次。</p>"
     )
+
+
+def _download_broll_selections(raw_json: str | None, uploads_dir: str) -> list[dict]:
+    """Parse the client's confirmed B-roll picks and materialize each one's
+    image into a local file pipeline.py can hand to ffmpeg.
+
+    Never raises: a malformed entry or a failed download just drops that one
+    overlay rather than the whole job — B-roll must stay optional, the same
+    "never let this add-on break core video generation" guarantee
+    media_search.py already gives its own callers for search failures.
+    """
+    if not raw_json:
+        return []
+    try:
+        raw_selections = json.loads(raw_json)
+    except (TypeError, ValueError):
+        return []
+    if not isinstance(raw_selections, list):
+        return []
+
+    resolved: list[dict] = []
+    for i, selection in enumerate(raw_selections):
+        if not isinstance(selection, dict):
+            continue
+        try:
+            slide_number = int(selection["slide_number"])
+            download_url_value = str(selection["download_url"])
+            start_ms = int(selection["start_ms"])
+            end_ms = int(selection["end_ms"])
+        except (KeyError, TypeError, ValueError):
+            continue
+
+        ext = os.path.splitext(download_url_value.split("?")[0])[1][:5] or ".jpg"
+        image_path = os.path.join(uploads_dir, f"broll_{slide_number}_{i}{ext}")
+        try:
+            request = UrllibRequest(
+                download_url_value, headers={"User-Agent": "PPT2Course-AI/0.1"}
+            )
+            with urlopen(request, timeout=15.0) as response:
+                data = response.read()
+            with open(image_path, "wb") as f:
+                f.write(data)
+        except Exception:
+            continue
+
+        resolved.append(
+            {
+                "slide_number": slide_number,
+                "image_path": image_path,
+                "start_ms": start_ms,
+                "end_ms": end_ms,
+            }
+        )
+    return resolved
 
 
 async def _save_upload(upload: UploadFile, dest_path: str) -> None:

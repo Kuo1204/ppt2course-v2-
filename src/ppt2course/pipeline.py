@@ -32,6 +32,7 @@ from ppt2course.video import (
     DEFAULT_SUBTITLE_MARGIN_V,
     DEFAULT_TRANSITION,
     DEFAULT_TRANSITION_DURATION_MS,
+    BrollOverlay,
     SlideVideoInput,
     VideoComposeError,
     compose_video,
@@ -42,6 +43,42 @@ DEFAULT_SILENT_DURATION_MS = 2000
 
 class PipelineError(Exception):
     pass
+
+
+def _broll_overlays_for_slide(
+    slide_number: int, selections: list[dict], get_duration_ms
+) -> tuple[BrollOverlay, ...]:
+    """Convert this slide's confirmed B-roll picks into BrollOverlay objects,
+    clamped to its own real (post-TTS) audio duration.
+
+    ``get_duration_ms`` is a zero-arg callable rather than a plain int so
+    that a slide with no B-roll selections never pays for (or needs to mock,
+    in tests) an extra ffprobe call — this stays a complete no-op for every
+    caller that doesn't use the feature, jobs.py included.
+
+    A selection whose window no longer fits — e.g. the script (and so the
+    narration length) changed after the user picked a timing in the UI — is
+    dropped rather than allowed to fail the whole job: like every other
+    optional add-on in this pipeline, a B-roll problem must never take down
+    core video generation.
+    """
+    matching = [s for s in selections if s.get("slide_number") == slide_number]
+    if not matching:
+        return ()
+
+    duration_ms = get_duration_ms()
+    overlays = []
+    for selection in matching:
+        try:
+            start_ms = int(selection["start_ms"])
+            end_ms = min(int(selection["end_ms"]), duration_ms)
+            image_path = selection["image_path"]
+        except (KeyError, TypeError, ValueError):
+            continue
+        if start_ms < 0 or start_ms >= duration_ms or end_ms <= start_ms:
+            continue
+        overlays.append(BrollOverlay(image_path=image_path, start_ms=start_ms, end_ms=end_ms))
+    return tuple(overlays)
 
 
 def _generate_silent_audio(out_path: str, duration_ms: int) -> None:
@@ -86,6 +123,7 @@ def run_pipeline(
     intro_path: str | None = None,
     outro_path: str | None = None,
     custom_dict_path: str | None = None,
+    broll_selections: list[dict] | None = None,
 ) -> dict[str, str | int]:
     try:
         slides = parse_ppt(pptx_path)
@@ -123,8 +161,16 @@ def run_pipeline(
             _generate_silent_audio(audio_path, DEFAULT_SILENT_DURATION_MS)
             chunks = []
 
+        broll_overlays = _broll_overlays_for_slide(
+            slide.index, broll_selections or [], lambda p=audio_path: get_audio_duration_ms(p)
+        )
         slide_inputs.append(
-            SlideVideoInput(image_path=image_path, audio_path=audio_path, chunks=chunks)
+            SlideVideoInput(
+                image_path=image_path,
+                audio_path=audio_path,
+                chunks=chunks,
+                broll_overlays=broll_overlays,
+            )
         )
 
     video_path = os.path.join(work_dir, "course.mp4")
