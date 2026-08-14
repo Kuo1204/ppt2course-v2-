@@ -26,6 +26,7 @@ from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
+from starlette.concurrency import run_in_threadpool
 
 from ppt2course.jobs import JobManager, JobStatus
 from ppt2course.media_search import DEFAULT_CANDIDATE_LIMIT, search_pexels
@@ -38,7 +39,7 @@ from ppt2course.script_gen import (
     generate_script,
 )
 from ppt2course.timeline_models import VisualAssetType
-from ppt2course.tts import DEFAULT_RATE, DEFAULT_VOLUME, TtsError, synthesize_preview
+from ppt2course.tts import DEFAULT_RATE, DEFAULT_VOLUME, TtsError, synthesize, synthesize_preview
 from ppt2course.upload import PptParseError, parse_ppt
 from ppt2course.video import (
     DEFAULT_BGM_VOLUME,
@@ -54,7 +55,12 @@ from ppt2course.video import (
     DEFAULT_TRANSITION_DURATION_MS,
     LOGO_POSITIONS,
 )
-from ppt2course.visual_analyzer import DEFAULT_VISUAL_MODEL, analyze_visual_needs
+from ppt2course.visual_analyzer import (
+    DEFAULT_BROLL_DURATION_MS,
+    DEFAULT_VISUAL_MODEL,
+    analyze_visual_needs,
+    suggest_broll_window_ms,
+)
 
 DEFAULT_DATA_ROOT = os.environ.get("PPT2COURSE_DATA_ROOT", "data/jobs")
 # src/ppt2course/server.py -> parents[2] is the project root, where `frontend/` lives.
@@ -410,6 +416,9 @@ def create_app(
     async def analyze_visuals(
         pptx: UploadFile = File(...),
         texts: str = Form(...),
+        voice: str = Form(...),
+        voice_rate: str = Form(DEFAULT_RATE),
+        voice_volume: str = Form(DEFAULT_VOLUME),
         gemini_api_key: str | None = Form(None),
         gemini_model: str = Form(DEFAULT_VISUAL_MODEL),
     ):
@@ -417,7 +426,8 @@ def create_app(
         # call synchronously and returns advice for the user to accept or
         # reject. Never touches compose_video — this endpoint cannot change
         # any job's video/subtitle timing, only suggest slides that might
-        # benefit from an added visual.
+        # benefit from an added visual (and where, see
+        # _suggest_broll_timing below).
         scripts = json.loads(texts)
 
         with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as tmp:
@@ -438,8 +448,36 @@ def create_app(
             )
 
         result = analyze_visual_needs(slides, scripts, api_key=gemini_api_key, model=gemini_model)
+
+        # Keyed by slide_number rather than zipped by position — safer than
+        # assuming result.recommendations comes back in the same order as
+        # slides/scripts (heuristic mode does; AI mode only guarantees a
+        # slide_number-sorted order, which happens to match today but
+        # shouldn't be relied on here).
+        scripts_by_slide_number = {slide.index: script for slide, script in zip(slides, scripts)}
+        recommendations_payload = []
+        for rec in result.recommendations:
+            # synthesize() (called inside _suggest_broll_timing) runs its own
+            # asyncio.run() internally, which cannot nest inside the event
+            # loop this route is already running on — offload to a thread
+            # pool thread, the same way pipeline.py's background worker
+            # thread already gives synthesize() a loop-free thread to do
+            # that in.
+            start_ms, end_ms = await run_in_threadpool(
+                _suggest_broll_timing,
+                scripts_by_slide_number.get(rec.slide_number, ""),
+                rec,
+                voice=voice,
+                rate=voice_rate,
+                volume=voice_volume,
+            )
+            payload = asdict(rec)
+            payload["suggested_start_ms"] = start_ms
+            payload["suggested_end_ms"] = end_ms
+            recommendations_payload.append(payload)
+
         return {
-            "recommendations": [asdict(item) for item in result.recommendations],
+            "recommendations": recommendations_payload,
             "warnings": list(result.warnings),
             "used_ai": result.used_ai,
         }
@@ -600,6 +638,33 @@ def _render_share_page_not_found() -> str:
         "<h1>找不到這支影片</h1>"
         "<p>連結可能已經過期(產出的檔案只保留 24 小時)，或網址不正確，請確認後再試一次。</p>"
     )
+
+
+def _suggest_broll_timing(script: str, recommendation, voice: str, rate: str, volume: str) -> tuple[int, int]:
+    """Real-timing basis for "AI 自動抓時間點": synthesizes this one slide's
+    script (throwaway audio, deleted immediately) to get the same
+    WordBoundary-aligned TimedChunk list the real job would produce, then
+    hands it to suggest_broll_window_ms() to place the window against
+    ``recommendation.script_anchor``'s *actual* narration timing.
+
+    Only recommended slides with a non-empty anchor pay for a TTS call —
+    everything else gets the fixed default window without touching the
+    network. Never raises: a TTS failure here (still fully optional/
+    advisory) just falls back to the same default any other slide gets.
+    """
+    if not recommendation.recommended or not recommendation.script_anchor:
+        return (0, DEFAULT_BROLL_DURATION_MS)
+
+    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
+        audio_tmp_path = tmp.name
+    try:
+        chunks = synthesize(script, voice, audio_tmp_path, rate=rate, volume=volume)
+        return suggest_broll_window_ms(script, recommendation.script_anchor, chunks)
+    except TtsError:
+        return (0, DEFAULT_BROLL_DURATION_MS)
+    finally:
+        if os.path.exists(audio_tmp_path):
+            os.unlink(audio_tmp_path)
 
 
 def _download_broll_selections(raw_json: str | None, uploads_dir: str) -> list[dict]:

@@ -74,6 +74,12 @@ class VisualRecommendation:
     visual_type: VisualAssetType
     keywords: tuple[str, ...] = ()
     suggested_position: str = "during_slide"
+    # A short verbatim excerpt of this slide's own narration script, used to
+    # anchor *when* in the audio a chosen visual should appear (distinct
+    # from `keywords`, which are optimized for image-search relevance and
+    # may not be substrings of the script at all, e.g. English search terms
+    # for a Chinese script). Empty means "no anchor" — start of narration.
+    script_anchor: str = ""
 
     def __post_init__(self) -> None:
         if self.slide_number < 1:

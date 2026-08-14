@@ -195,12 +195,11 @@ const STEPS = [
   { n: 6, key: "review", label: "開始製作" },
 ];
 
-// Slide-local default window for a newly-picked B-roll: starts 2s into the
-// slide's own narration, lasts 4s. Purely a starting point for the user to
-// adjust — the real, authoritative clamp against that slide's actual audio
-// duration happens server-side (pipeline.py), never here.
-const BROLL_DEFAULT_START_SEC = 2;
-const BROLL_DEFAULT_DURATION_SEC = 4;
+// Note: no client-side default start/duration constant here anymore — each
+// recommendation's suggested_start_ms/suggested_end_ms (from
+// /api/analyze-visuals, computed against real per-slide TTS timing) is the
+// starting point the user sees, still fully overridable, and still clamped
+// server-side against the slide's real audio duration regardless.
 
 function useObjectUrls(files) {
   const [urls, setUrls] = useState([]);
@@ -351,6 +350,9 @@ function App() {
       const { recommendations, warnings } = await analyzeVisuals({
         pptxFile,
         texts,
+        voice,
+        voiceRate: formatPercent(voiceRate),
+        voiceVolume: formatPercent(voiceVolume),
         geminiApiKey,
       });
       setVisualRecommendations(recommendations);
@@ -1833,7 +1835,7 @@ function VisualsStep({
 
         <GenerateScriptButton
           label={analysisStatus === "done" ? "重新分析視覺素材建議" : "分析 PPT 並產生視覺建議"}
-          loadingLabel="AI 分析中，請稍候..."
+          loadingLabel="AI 分析中，請稍候（會為建議頁面合成語音以抓取最適合的出現時間，可能需要一些時間）..."
           disabled={!canAnalyze || analysisStatus === "loading"}
           status={analysisStatus}
           error={analysisError}
@@ -1873,6 +1875,8 @@ function VisualsStep({
                 <VisualRecommendationCard
                   key={rec.slide_number}
                   recommendation={rec}
+                  suggestedStartSec={rec.suggested_start_ms / 1000}
+                  suggestedDurationSec={Math.max(0.5, (rec.suggested_end_ms - rec.suggested_start_ms) / 1000)}
                   thumbUrl={thumbUrls[rec.slide_number - 1]}
                   searchState={mediaSearchBySlide[rec.slide_number]}
                   onSearch={() => onSearchMedia(rec.slide_number, rec.keywords[0] || rec.title)}
@@ -1896,10 +1900,19 @@ function VisualsStep({
   );
 }
 
-function VisualRecommendationCard({ recommendation, thumbUrl, searchState, onSearch, choice, setChoice }) {
+function VisualRecommendationCard({
+  recommendation,
+  suggestedStartSec,
+  suggestedDurationSec,
+  thumbUrl,
+  searchState,
+  onSearch,
+  choice,
+  setChoice,
+}) {
   const assets = searchState?.assets || [];
-  const startSec = choice?.startSec ?? BROLL_DEFAULT_START_SEC;
-  const durationSec = choice?.durationSec ?? BROLL_DEFAULT_DURATION_SEC;
+  const startSec = choice?.startSec ?? suggestedStartSec;
+  const durationSec = choice?.durationSec ?? suggestedDurationSec;
 
   function selectAsset(asset) {
     setChoice(asset ? { asset, startSec, durationSec } : null);
@@ -1973,7 +1986,9 @@ function VisualRecommendationCard({ recommendation, thumbUrl, searchState, onSea
                   onChange={(e) => setChoice({ ...choice, durationSec: Number(e.target.value) })}
                 />
               </label>
-              <span className="hint">實際秒數會依該頁旁白長度自動裁切，不會超出旁白範圍</span>
+              <span className="hint">
+                時間已依 AI 判斷旁白最相關的位置自動帶入，可自行調整；實際秒數仍會依該頁旁白長度自動裁切，不會超出旁白範圍
+              </span>
             </div>
           )}
         </>

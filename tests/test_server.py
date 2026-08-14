@@ -12,10 +12,11 @@ from ppt2course.pipeline import PipelineError
 from ppt2course.pptx_preview import PptxPreviewError
 from ppt2course.script_gen import ScriptGenerationError, ScriptMode
 from ppt2course.server import create_app
+from ppt2course.subtitle import TimedChunk
 from ppt2course.timeline_models import VisualAsset, VisualAssetType, VisualRecommendation
 from ppt2course.tts import TtsError
 from ppt2course.upload import PptParseError, SlideContent
-from ppt2course.visual_analyzer import VisualAnalysisResult
+from ppt2course.visual_analyzer import DEFAULT_BROLL_DURATION_MS, VisualAnalysisResult
 
 
 def _make_client(pipeline_fn, tmp_path):
@@ -840,7 +841,11 @@ def test_analyze_visuals_returns_recommendations(tmp_path):
         ) as mock_analyze:
             response = client.post(
                 "/api/analyze-visuals",
-                data={"texts": json.dumps(["講稿一"]), "gemini_api_key": "secret-key"},
+                data={
+                    "texts": json.dumps(["講稿一"]),
+                    "voice": "zh-TW-HsiaoChenNeural",
+                    "gemini_api_key": "secret-key",
+                },
                 files={"pptx": ("deck.pptx", io.BytesIO(b"fake-pptx"), "application/octet-stream")},
             )
 
@@ -858,6 +863,10 @@ def test_analyze_visuals_returns_recommendations(tmp_path):
             "visual_type": "image",
             "keywords": ["employee isolation"],
             "suggested_position": "during_slide",
+            "script_anchor": "",
+            # No script_anchor -> the fixed default window, no TTS call needed.
+            "suggested_start_ms": 0,
+            "suggested_end_ms": DEFAULT_BROLL_DURATION_MS,
         }
     ]
     assert mock_analyze.call_args.kwargs["api_key"] == "secret-key"
@@ -875,7 +884,7 @@ def test_analyze_visuals_rejects_mismatched_texts_length(tmp_path):
     with patch("ppt2course.server.parse_ppt", return_value=fake_slides):
         response = client.post(
             "/api/analyze-visuals",
-            data={"texts": json.dumps(["只有一段講稿"])},
+            data={"texts": json.dumps(["只有一段講稿"]), "voice": "zh-TW-HsiaoChenNeural"},
             files={"pptx": ("deck.pptx", io.BytesIO(b"fake-pptx"), "application/octet-stream")},
         )
 
@@ -890,7 +899,7 @@ def test_analyze_visuals_wraps_ppt_parse_error(tmp_path):
     with patch("ppt2course.server.parse_ppt", side_effect=PptParseError("bad pptx")):
         response = client.post(
             "/api/analyze-visuals",
-            data={"texts": json.dumps([])},
+            data={"texts": json.dumps([]), "voice": "zh-TW-HsiaoChenNeural"},
             files={"pptx": ("deck.pptx", io.BytesIO(b"fake-pptx"), "application/octet-stream")},
         )
 
@@ -909,13 +918,139 @@ def test_analyze_visuals_never_echoes_the_api_key(tmp_path):
         with patch("ppt2course.server.analyze_visual_needs", return_value=fake_result):
             response = client.post(
                 "/api/analyze-visuals",
-                data={"texts": json.dumps(["講稿一"]), "gemini_api_key": "super-secret-key"},
+                data={
+                    "texts": json.dumps(["講稿一"]),
+                    "voice": "zh-TW-HsiaoChenNeural",
+                    "gemini_api_key": "super-secret-key",
+                },
                 files={"pptx": ("deck.pptx", io.BytesIO(b"fake-pptx"), "application/octet-stream")},
             )
 
     assert response.status_code == 200
     assert "super-secret-key" not in response.text
     assert response.json()["warnings"] == ["Gemini API Key 未設定，已使用本機規則產生建議。"]
+
+
+# ---- suggested_start_ms/end_ms (real per-slide TTS timing, opt-in per recommendation) ----
+
+
+def _fake_recommendation(recommended=True, script_anchor="孤立"):
+    return VisualRecommendation(
+        slide_number=1,
+        title="職場孤立",
+        visual_need_score=82 if recommended else 20,
+        recommended=recommended,
+        reason="抽象概念適合搭配情境圖片",
+        visual_type=VisualAssetType.IMAGE,
+        keywords=("employee isolation",),
+        suggested_position="during_slide",
+        script_anchor=script_anchor,
+    )
+
+
+def test_analyze_visuals_uses_real_tts_timing_for_a_recommended_slide_with_anchor(tmp_path):
+    manager = JobManager(pipeline_fn=lambda **kwargs: {}, auto_start=False)
+    app = create_app(job_manager=manager, data_root=str(tmp_path / "data"), frontend_dist=None)
+    client = TestClient(app)
+
+    fake_slides = [SlideContent(index=1, text="投影片一", notes="")]
+    fake_result = VisualAnalysisResult(recommendations=(_fake_recommendation(),))
+    fake_chunks = [
+        TimedChunk("員工被", 0, 600),
+        TimedChunk("孤立", 600, 1100),
+        TimedChunk("的情況", 1100, 1800),
+    ]
+    with patch("ppt2course.server.parse_ppt", return_value=fake_slides):
+        with patch("ppt2course.server.analyze_visual_needs", return_value=fake_result):
+            with patch(
+                "ppt2course.server.synthesize", return_value=fake_chunks
+            ) as mock_synthesize:
+                response = client.post(
+                    "/api/analyze-visuals",
+                    data={
+                        "texts": json.dumps(["員工被孤立的情況"]),
+                        "voice": "zh-TW-HsiaoChenNeural",
+                        "voice_rate": "+10%",
+                        "voice_volume": "-5%",
+                    },
+                    files={"pptx": ("deck.pptx", io.BytesIO(b"fake-pptx"), "application/octet-stream")},
+                )
+
+    assert response.status_code == 200
+    rec = response.json()["recommendations"][0]
+    assert rec["suggested_start_ms"] == 600
+    assert rec["suggested_end_ms"] == 1100
+    assert mock_synthesize.call_args.args[0] == "員工被孤立的情況"
+    assert mock_synthesize.call_args.args[1] == "zh-TW-HsiaoChenNeural"
+    assert mock_synthesize.call_args.kwargs["rate"] == "+10%"
+    assert mock_synthesize.call_args.kwargs["volume"] == "-5%"
+
+
+def test_analyze_visuals_skips_tts_for_a_non_recommended_slide(tmp_path):
+    manager = JobManager(pipeline_fn=lambda **kwargs: {}, auto_start=False)
+    app = create_app(job_manager=manager, data_root=str(tmp_path / "data"), frontend_dist=None)
+    client = TestClient(app)
+
+    fake_slides = [SlideContent(index=1, text="投影片一", notes="")]
+    fake_result = VisualAnalysisResult(
+        recommendations=(_fake_recommendation(recommended=False),)
+    )
+    with patch("ppt2course.server.parse_ppt", return_value=fake_slides):
+        with patch("ppt2course.server.analyze_visual_needs", return_value=fake_result):
+            with patch("ppt2course.server.synthesize") as mock_synthesize:
+                response = client.post(
+                    "/api/analyze-visuals",
+                    data={"texts": json.dumps(["講稿一"]), "voice": "zh-TW-HsiaoChenNeural"},
+                    files={"pptx": ("deck.pptx", io.BytesIO(b"fake-pptx"), "application/octet-stream")},
+                )
+
+    mock_synthesize.assert_not_called()
+    rec = response.json()["recommendations"][0]
+    assert (rec["suggested_start_ms"], rec["suggested_end_ms"]) == (0, DEFAULT_BROLL_DURATION_MS)
+
+
+def test_analyze_visuals_skips_tts_when_there_is_no_script_anchor(tmp_path):
+    manager = JobManager(pipeline_fn=lambda **kwargs: {}, auto_start=False)
+    app = create_app(job_manager=manager, data_root=str(tmp_path / "data"), frontend_dist=None)
+    client = TestClient(app)
+
+    fake_slides = [SlideContent(index=1, text="投影片一", notes="")]
+    fake_result = VisualAnalysisResult(recommendations=(_fake_recommendation(script_anchor=""),))
+    with patch("ppt2course.server.parse_ppt", return_value=fake_slides):
+        with patch("ppt2course.server.analyze_visual_needs", return_value=fake_result):
+            with patch("ppt2course.server.synthesize") as mock_synthesize:
+                response = client.post(
+                    "/api/analyze-visuals",
+                    data={"texts": json.dumps(["講稿一"]), "voice": "zh-TW-HsiaoChenNeural"},
+                    files={"pptx": ("deck.pptx", io.BytesIO(b"fake-pptx"), "application/octet-stream")},
+                )
+
+    mock_synthesize.assert_not_called()
+    rec = response.json()["recommendations"][0]
+    assert (rec["suggested_start_ms"], rec["suggested_end_ms"]) == (0, DEFAULT_BROLL_DURATION_MS)
+
+
+def test_analyze_visuals_falls_back_to_default_window_when_tts_fails(tmp_path):
+    manager = JobManager(pipeline_fn=lambda **kwargs: {}, auto_start=False)
+    app = create_app(job_manager=manager, data_root=str(tmp_path / "data"), frontend_dist=None)
+    client = TestClient(app)
+
+    fake_slides = [SlideContent(index=1, text="投影片一", notes="")]
+    fake_result = VisualAnalysisResult(recommendations=(_fake_recommendation(),))
+    with patch("ppt2course.server.parse_ppt", return_value=fake_slides):
+        with patch("ppt2course.server.analyze_visual_needs", return_value=fake_result):
+            with patch(
+                "ppt2course.server.synthesize", side_effect=TtsError("network error")
+            ):
+                response = client.post(
+                    "/api/analyze-visuals",
+                    data={"texts": json.dumps(["員工被孤立的情況"]), "voice": "zh-TW-HsiaoChenNeural"},
+                    files={"pptx": ("deck.pptx", io.BytesIO(b"fake-pptx"), "application/octet-stream")},
+                )
+
+    assert response.status_code == 200  # a TTS failure here must never fail the whole request
+    rec = response.json()["recommendations"][0]
+    assert (rec["suggested_start_ms"], rec["suggested_end_ms"]) == (0, DEFAULT_BROLL_DURATION_MS)
 
 
 # ---------- Pexels media search (optional, never fails the video job) ----------

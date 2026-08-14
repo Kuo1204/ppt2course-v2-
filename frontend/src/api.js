@@ -117,10 +117,13 @@ export async function generateScriptPreview({ pptxFile, scriptMode, geminiApiKey
   return response.json();
 }
 
-export async function analyzeVisuals({ pptxFile, texts, geminiApiKey, geminiModel }) {
+export async function analyzeVisuals({ pptxFile, texts, voice, voiceRate, voiceVolume, geminiApiKey, geminiModel }) {
   const form = new FormData();
   form.append("pptx", pptxFile);
   form.append("texts", JSON.stringify(texts));
+  form.append("voice", voice);
+  if (voiceRate) form.append("voice_rate", voiceRate);
+  if (voiceVolume) form.append("voice_volume", voiceVolume);
   if (geminiApiKey) form.append("gemini_api_key", geminiApiKey);
   if (geminiModel) form.append("gemini_model", geminiModel);
 
