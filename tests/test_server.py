@@ -104,6 +104,46 @@ def test_create_job_forwards_subtitle_margin_v(tmp_path):
     assert calls[0]["subtitle_margin_v"] == 220
 
 
+def test_create_job_forwards_subtitle_colors(tmp_path):
+    calls = []
+
+    def fake_pipeline(**kwargs):
+        calls.append(kwargs)
+        return {}
+
+    client, manager = _make_client(fake_pipeline, tmp_path)
+
+    client.post(
+        "/api/jobs",
+        data=_upload_form(subtitle_font_color="#000000", subtitle_outline_color="#FFFFFF"),
+        files=_upload_files(),
+    )
+    manager.process_next()
+
+    assert calls[0]["subtitle_font_color"] == "#000000"
+    assert calls[0]["subtitle_outline_color"] == "#FFFFFF"
+
+
+def test_create_job_rejects_invalid_subtitle_font_color(tmp_path):
+    client, _ = _make_client(lambda **kwargs: {}, tmp_path)
+    response = client.post(
+        "/api/jobs",
+        data=_upload_form(subtitle_font_color="not-a-color"),
+        files=_upload_files(),
+    )
+    assert response.status_code == 400
+
+
+def test_create_job_rejects_invalid_subtitle_outline_color(tmp_path):
+    client, _ = _make_client(lambda **kwargs: {}, tmp_path)
+    response = client.post(
+        "/api/jobs",
+        data=_upload_form(subtitle_outline_color="#FFF"),
+        files=_upload_files(),
+    )
+    assert response.status_code == 400
+
+
 def test_create_job_forwards_logo_position(tmp_path):
     calls = []
 

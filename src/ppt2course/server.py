@@ -59,7 +59,9 @@ from ppt2course.video import (
     DEFAULT_LOGO_POSITION,
     DEFAULT_LOGO_WIDTH,
     DEFAULT_RESOLUTION,
+    DEFAULT_SUBTITLE_FONT_COLOR,
     DEFAULT_SUBTITLE_MARGIN_V,
+    DEFAULT_SUBTITLE_OUTLINE_COLOR,
     DEFAULT_TRANSITION,
     DEFAULT_TRANSITION_DURATION_MS,
     LOGO_POSITIONS,
@@ -77,6 +79,7 @@ DEFAULT_FRONTEND_DIST = os.environ.get(
     "PPT2COURSE_FRONTEND_DIST", str(Path(__file__).resolve().parents[2] / "frontend" / "dist")
 )
 ALLOWED_DOWNLOAD_TYPES = {"mp4", "srt", "docx"}
+_HEX_COLOR_RE = re.compile(r"^#?[0-9a-fA-F]{6}$")
 
 # The mobile-download QR code links to /share/{job_id}, which itself embeds
 # links to /download and /view. A phone's camera app / QR scanner typically
@@ -167,6 +170,8 @@ def create_app(
         fps: int = Form(DEFAULT_FPS),
         font_size: int = Form(DEFAULT_FONT_SIZE),
         subtitle_margin_v: int = Form(DEFAULT_SUBTITLE_MARGIN_V),
+        subtitle_font_color: str = Form(DEFAULT_SUBTITLE_FONT_COLOR),
+        subtitle_outline_color: str = Form(DEFAULT_SUBTITLE_OUTLINE_COLOR),
         logo_width: int = Form(DEFAULT_LOGO_WIDTH),
         logo_margin: int = Form(DEFAULT_LOGO_MARGIN),
         logo_opacity: float = Form(DEFAULT_LOGO_OPACITY),
@@ -206,6 +211,15 @@ def create_app(
             )
         if avatar_size not in AVATAR_SIZES:
             raise HTTPException(status_code=400, detail=f"invalid avatar_size: {avatar_size}")
+
+        if not _HEX_COLOR_RE.match(subtitle_font_color):
+            raise HTTPException(
+                status_code=400, detail=f"invalid subtitle_font_color: {subtitle_font_color}"
+            )
+        if not _HEX_COLOR_RE.match(subtitle_outline_color):
+            raise HTTPException(
+                status_code=400, detail=f"invalid subtitle_outline_color: {subtitle_outline_color}"
+            )
 
         if reading_pause_ms < 0:
             raise HTTPException(status_code=400, detail="reading_pause_ms must be >= 0")
@@ -279,6 +293,8 @@ def create_app(
             fps=fps,
             font_size=font_size,
             subtitle_margin_v=subtitle_margin_v,
+            subtitle_font_color=subtitle_font_color,
+            subtitle_outline_color=subtitle_outline_color,
             logo_path=logo_path,
             logo_width=logo_width,
             logo_margin=logo_margin,

@@ -18,6 +18,7 @@ from ppt2course.video import (
     _compute_slide_offsets,
     _concatenate_with_intro_outro,
     _effective_transition_ms,
+    _hex_to_ass_color,
     _mix_background_music,
     _scale_pad_filter,
     _total_duration_ms,
@@ -345,6 +346,68 @@ def test_build_ffmpeg_command_custom_subtitle_margin_v():
     filter_complex = cmd[cmd.index("-filter_complex") + 1]
     assert "MarginV=180" in filter_complex
     assert "MarginV=30" not in filter_complex
+
+
+# ---- subtitle font/outline color ----
+
+def test_hex_to_ass_color_converts_rgb_to_bgr():
+    # ASS stores colors byte-swapped (blue first) relative to web RGB hex.
+    assert _hex_to_ass_color("#FF8000") == "&H0080FF&"
+
+
+def test_hex_to_ass_color_accepts_hex_without_hash():
+    assert _hex_to_ass_color("000000") == "&H000000&"
+
+
+def test_hex_to_ass_color_rejects_invalid_input():
+    with pytest.raises(VideoComposeError):
+        _hex_to_ass_color("not-a-color")
+    with pytest.raises(VideoComposeError):
+        _hex_to_ass_color("#FFF")
+
+
+def test_build_ffmpeg_command_default_subtitle_colors_unchanged():
+    # Locks in the pre-existing white-text/black-outline look for anyone not
+    # touching the new controls.
+    slide = _slide([TimedChunk("你好", 0, 800)])
+    cmd = _build_ffmpeg_command(
+        [slide],
+        durations_ms=[2000],
+        offsets_ms=[0],
+        srt_path="out.srt",
+        out_video_path="out.mp4",
+        transition="fade",
+        transition_duration_ms=500,
+        resolution=(1920, 1080),
+        fps=30,
+        font_size=22,
+    )
+    filter_complex = cmd[cmd.index("-filter_complex") + 1]
+    assert "PrimaryColour=&HFFFFFF&" in filter_complex
+    assert "OutlineColour=&H000000&" in filter_complex
+
+
+def test_build_ffmpeg_command_custom_subtitle_colors():
+    # e.g. black text with a white outline -- the exact opposite of the
+    # default look, which is exactly the kind of swap a user would want.
+    slide = _slide([TimedChunk("你好", 0, 800)])
+    cmd = _build_ffmpeg_command(
+        [slide],
+        durations_ms=[2000],
+        offsets_ms=[0],
+        srt_path="out.srt",
+        out_video_path="out.mp4",
+        transition="fade",
+        transition_duration_ms=500,
+        resolution=(1920, 1080),
+        fps=30,
+        font_size=22,
+        subtitle_font_color="#000000",
+        subtitle_outline_color="#FFFFFF",
+    )
+    filter_complex = cmd[cmd.index("-filter_complex") + 1]
+    assert "PrimaryColour=&H000000&" in filter_complex
+    assert "OutlineColour=&HFFFFFF&" in filter_complex
 
 
 # ---- BrollOverlay / B-roll filter construction ----
@@ -972,6 +1035,32 @@ def test_compose_video_forwards_subtitle_margin_v_to_ffmpeg_command(tmp_path):
     cmd = mock_run.call_args.args[0]
     filter_complex = cmd[cmd.index("-filter_complex") + 1]
     assert "MarginV=250" in filter_complex
+
+
+def test_compose_video_forwards_subtitle_colors_to_ffmpeg_command(tmp_path):
+    slide = _slide([TimedChunk("你好", 0, 800)])
+
+    class FakeResult:
+        returncode = 0
+        stderr = ""
+
+    with patch("ppt2course.video.shutil.which", return_value="/usr/bin/ffmpeg"):
+        with patch("ppt2course.video.get_audio_duration_ms", return_value=1000):
+            with patch(
+                "ppt2course.video.subprocess.run", return_value=FakeResult()
+            ) as mock_run:
+                compose_video(
+                    [slide],
+                    str(tmp_path / "out.mp4"),
+                    str(tmp_path / "out.srt"),
+                    subtitle_font_color="#000000",
+                    subtitle_outline_color="#FFFFFF",
+                )
+
+    cmd = mock_run.call_args.args[0]
+    filter_complex = cmd[cmd.index("-filter_complex") + 1]
+    assert "PrimaryColour=&H000000&" in filter_complex
+    assert "OutlineColour=&HFFFFFF&" in filter_complex
 
 
 # ---- _add_logo_overlay / _mix_background_music / _concatenate_with_intro_outro ----

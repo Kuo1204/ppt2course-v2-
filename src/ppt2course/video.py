@@ -8,6 +8,7 @@ always agree on where each slide actually starts — per-slide TimedChunk lists
 STEP4's generate_cues/cues_to_srt are called with those offsets baked in.
 """
 
+import re
 import shutil
 import subprocess
 import tempfile
@@ -88,10 +89,27 @@ LOGO_POSITIONS = tuple(_LOGO_POSITION_OVERLAYS)
 # the fallback for anyone who doesn't touch that control.
 SUBTITLE_FONT_NAME = "Noto Sans CJK TC"
 DEFAULT_SUBTITLE_MARGIN_V = 30
+DEFAULT_SUBTITLE_FONT_COLOR = "#FFFFFF"
+DEFAULT_SUBTITLE_OUTLINE_COLOR = "#000000"
+
+_HEX_COLOR_RE = re.compile(r"^#?([0-9a-fA-F]{6})$")
 
 
 class VideoComposeError(Exception):
     pass
+
+
+def _hex_to_ass_color(hex_color: str) -> str:
+    """Converts a "#RRGGBB" (or "RRGGBB") web color into libass's
+    "&HBBGGRR&" force_style color format — ASS stores colors byte-swapped
+    (blue first) relative to the familiar RGB hex order."""
+    match = _HEX_COLOR_RE.match(hex_color)
+    if not match:
+        raise VideoComposeError(
+            f"invalid color {hex_color!r}; expected a 6-digit hex color like #FFFFFF"
+        )
+    rr, gg, bb = match.group(1)[0:2], match.group(1)[2:4], match.group(1)[4:6]
+    return f"&H{bb}{gg}{rr}&".upper()
 
 
 @dataclass(frozen=True)
@@ -468,9 +486,13 @@ def _subtitle_filter(
     font_size: int,
     resolution: tuple[int, int],
     margin_v: int = DEFAULT_SUBTITLE_MARGIN_V,
+    font_color: str = DEFAULT_SUBTITLE_FONT_COLOR,
+    outline_color: str = DEFAULT_SUBTITLE_OUTLINE_COLOR,
 ) -> tuple[str, str]:
     width, height = resolution
     escaped_path = _escape_ffmpeg_filter_path(srt_path)
+    primary_ass = _hex_to_ass_color(font_color)
+    outline_ass = _hex_to_ass_color(outline_color)
     # Plain SRT carries no PlayResX/PlayResY of its own, so ffmpeg's
     # SRT->ASS conversion always stamps a fixed 384x288 default script
     # canvas (confirmed by dumping the intermediate .ass — this does not
@@ -487,7 +509,7 @@ def _subtitle_filter(
     # the actual output resolution.
     style = (
         f"FontName={SUBTITLE_FONT_NAME},FontSize={font_size},"
-        f"PrimaryColour=&HFFFFFF&,OutlineColour=&H000000&,"
+        f"PrimaryColour={primary_ass},OutlineColour={outline_ass},"
         f"BorderStyle=1,Outline=2,Shadow=0,MarginV={margin_v},"
         f"WrapStyle=2,PlayResX={width},PlayResY={height}"
     )
@@ -507,6 +529,8 @@ def _build_ffmpeg_command(
     fps: int,
     font_size: int,
     subtitle_margin_v: int = DEFAULT_SUBTITLE_MARGIN_V,
+    subtitle_font_color: str = DEFAULT_SUBTITLE_FONT_COLOR,
+    subtitle_outline_color: str = DEFAULT_SUBTITLE_OUTLINE_COLOR,
     avatar_position: str = DEFAULT_AVATAR_POSITION,
     avatar_size: str = DEFAULT_AVATAR_SIZE,
     avatar_margin: int = DEFAULT_AVATAR_MARGIN,
@@ -609,7 +633,8 @@ def _build_ffmpeg_command(
     else:
         audio_filter, audio_label = _audio_acrossfade_chain(n, transition_duration_ms)
     sub_filter, final_video_label = _subtitle_filter(
-        srt_path, video_label, font_size, resolution, margin_v=subtitle_margin_v
+        srt_path, video_label, font_size, resolution, margin_v=subtitle_margin_v,
+        font_color=subtitle_font_color, outline_color=subtitle_outline_color,
     )
 
     filter_parts = scale_filters + audio_label_filters
@@ -756,6 +781,8 @@ def compose_video(
     fps: int = DEFAULT_FPS,
     font_size: int = DEFAULT_FONT_SIZE,
     subtitle_margin_v: int = DEFAULT_SUBTITLE_MARGIN_V,
+    subtitle_font_color: str = DEFAULT_SUBTITLE_FONT_COLOR,
+    subtitle_outline_color: str = DEFAULT_SUBTITLE_OUTLINE_COLOR,
     logo_path: str | None = None,
     logo_width: int = DEFAULT_LOGO_WIDTH,
     logo_margin: int = DEFAULT_LOGO_MARGIN,
@@ -881,6 +908,8 @@ def compose_video(
             fps,
             font_size,
             subtitle_margin_v=subtitle_margin_v,
+            subtitle_font_color=subtitle_font_color,
+            subtitle_outline_color=subtitle_outline_color,
             avatar_position=avatar_position,
             avatar_size=avatar_size,
             avatar_margin=avatar_margin,

@@ -149,6 +149,12 @@ const SUBTITLE_POSITION_MIN = 2;
 const SUBTITLE_POSITION_MAX = 30;
 const SUBTITLE_POSITION_DEFAULT = 3;
 
+// Mirrors video.py's DEFAULT_SUBTITLE_FONT_COLOR/DEFAULT_SUBTITLE_OUTLINE_COLOR
+// — white text with a black outline, the look every existing video already
+// has, so leaving these untouched must render byte-for-byte the same.
+const SUBTITLE_FONT_COLOR_DEFAULT = "#FFFFFF";
+const SUBTITLE_OUTLINE_COLOR_DEFAULT = "#000000";
+
 // Mirrors avatar.py's AvatarMode/AVATAR_MODES.
 const AVATAR_MODES = [
   { value: "none", label: "不使用" },
@@ -260,6 +266,8 @@ function App() {
   const [resolution, setResolution] = useState(RESOLUTIONS[0].value);
   const [fontSize, setFontSize] = useState(FONT_SIZES[1].value);
   const [subtitlePositionPercent, setSubtitlePositionPercent] = useState(SUBTITLE_POSITION_DEFAULT);
+  const [subtitleFontColor, setSubtitleFontColor] = useState(SUBTITLE_FONT_COLOR_DEFAULT);
+  const [subtitleOutlineColor, setSubtitleOutlineColor] = useState(SUBTITLE_OUTLINE_COLOR_DEFAULT);
   const [logoFile, setLogoFile] = useState(null);
   const [logoOpacity, setLogoOpacity] = useState(LOGO_OPACITY_DEFAULT);
   const [logoPosition, setLogoPosition] = useState(LOGO_POSITION_DEFAULT);
@@ -554,6 +562,8 @@ function App() {
     setResolution(RESOLUTIONS[0].value);
     setFontSize(FONT_SIZES[1].value);
     setSubtitlePositionPercent(SUBTITLE_POSITION_DEFAULT);
+    setSubtitleFontColor(SUBTITLE_FONT_COLOR_DEFAULT);
+    setSubtitleOutlineColor(SUBTITLE_OUTLINE_COLOR_DEFAULT);
     setLogoFile(null);
     setLogoOpacity(LOGO_OPACITY_DEFAULT);
     setLogoPosition(LOGO_POSITION_DEFAULT);
@@ -667,6 +677,8 @@ function App() {
       "subtitle_margin_v",
       String(Math.round((Number(height) * subtitlePositionPercent) / 100))
     );
+    form.append("subtitle_font_color", subtitleFontColor);
+    form.append("subtitle_outline_color", subtitleOutlineColor);
     if (logoFile) {
       form.append("logo", logoFile);
       form.append("logo_opacity", String(logoOpacity / 100));
@@ -835,6 +847,10 @@ function App() {
                 setFontSize={setFontSize}
                 subtitlePositionPercent={subtitlePositionPercent}
                 setSubtitlePositionPercent={setSubtitlePositionPercent}
+                subtitleFontColor={subtitleFontColor}
+                setSubtitleFontColor={setSubtitleFontColor}
+                subtitleOutlineColor={subtitleOutlineColor}
+                setSubtitleOutlineColor={setSubtitleOutlineColor}
                 previewImageUrl={thumbUrls[0]}
                 logoFile={logoFile}
                 setLogoFile={setLogoFile}
@@ -907,6 +923,9 @@ function App() {
                 fontSizeLabel={fontSizeLabel}
                 subtitlePositionPercent={subtitlePositionPercent}
                 extras={[
+                  (subtitleFontColor !== SUBTITLE_FONT_COLOR_DEFAULT ||
+                    subtitleOutlineColor !== SUBTITLE_OUTLINE_COLOR_DEFAULT) &&
+                    `字幕顏色（文字 ${subtitleFontColor.toUpperCase()}・外框 ${subtitleOutlineColor.toUpperCase()}）`,
                   logoFile &&
                     `Logo（${LOGO_POSITIONS.find((p) => p.value === logoPosition)?.label}角・${
                       LOGO_SIZES.find((s) => s.value === logoSize)?.label
@@ -1536,6 +1555,10 @@ function ExtrasStep({
   setFontSize,
   subtitlePositionPercent,
   setSubtitlePositionPercent,
+  subtitleFontColor,
+  setSubtitleFontColor,
+  subtitleOutlineColor,
+  setSubtitleOutlineColor,
   previewImageUrl,
   logoFile,
   setLogoFile,
@@ -1616,6 +1639,15 @@ function ExtrasStep({
           setPercent={setSubtitlePositionPercent}
           previewImageUrl={previewImageUrl}
           fontSize={fontSize}
+          fontColor={subtitleFontColor}
+          outlineColor={subtitleOutlineColor}
+        />
+
+        <SubtitleColorField
+          fontColor={subtitleFontColor}
+          setFontColor={setSubtitleFontColor}
+          outlineColor={subtitleOutlineColor}
+          setOutlineColor={setSubtitleOutlineColor}
         />
 
         <CollapsibleField
@@ -1696,12 +1728,7 @@ function ExtrasStep({
 
         <CollapsibleField
           title="節奏控制（停頓 ／ 聲音重疊）"
-          defaultOpen={
-            readingPauseSec > 0 ||
-            closingPauseSec > 0 ||
-            targetDurationEnabled ||
-            avoidVoiceOverlap
-          }
+          defaultOpen
           summary="使用預設節奏"
         >
           <PacingField
@@ -1925,7 +1952,14 @@ function AvatarField({
   );
 }
 
-function SubtitlePositionField({ percent, setPercent, previewImageUrl, fontSize }) {
+function SubtitlePositionField({
+  percent,
+  setPercent,
+  previewImageUrl,
+  fontSize,
+  fontColor,
+  outlineColor,
+}) {
   // True proportional preview: ffmpeg/libass burns FontSize as a literal
   // pixel count against the real output's actual height (see
   // scaledFontSize / DEFAULT_FONT_SIZE), so on the real video the caption's
@@ -1964,15 +1998,81 @@ function SubtitlePositionField({ percent, setPercent, previewImageUrl, fontSize 
       >
         <span
           className="subtitle-position-preview-caption"
-          style={{ bottom: `${percent}%`, fontSize: `clamp(8px, ${previewFontSizeCqw}cqw, 72px)` }}
+          style={{
+            bottom: `${percent}%`,
+            fontSize: `clamp(8px, ${previewFontSizeCqw}cqw, 72px)`,
+            color: fontColor,
+            textShadow: [
+              `-1px -1px 0 ${outlineColor}`,
+              `1px -1px 0 ${outlineColor}`,
+              `-1px 1px 0 ${outlineColor}`,
+              `1px 1px 0 ${outlineColor}`,
+              `0 0 6px ${outlineColor}`,
+            ].join(", "),
+          }}
         >
           字幕預覽文字
         </span>
       </div>
       <p className="hint" style={{ margin: "6px 0 0" }}>
         {previewImageUrl
-          ? "字級、位置皆按實際畫面比例預覽"
+          ? "字級、位置、顏色皆按實際畫面比例預覽"
           : "先在 Step 01 上傳投影片圖片，這裡就會用實際畫面預覽字幕高度與字級"}
+      </p>
+    </div>
+  );
+}
+
+// Native <input type="color"> pickers -- always send a real 6-digit hex
+// (browsers never leave a color input empty), so unlike the file/logo
+// fields there's no "not set" state to represent; leaving both untouched
+// simply resends the same white-text/black-outline defaults the backend
+// already renders today, so this is fully backward compatible either way.
+function SubtitleColorField({ fontColor, setFontColor, outlineColor, setOutlineColor }) {
+  const isDefault =
+    fontColor === SUBTITLE_FONT_COLOR_DEFAULT && outlineColor === SUBTITLE_OUTLINE_COLOR_DEFAULT;
+
+  return (
+    <div className="field full">
+      <label>
+        字幕顏色 <FieldTag required={false} />
+      </label>
+      <div className="subtitle-color-field">
+        <div className="subtitle-color-swatch">
+          <label htmlFor="subtitle-font-color-input">文字顏色</label>
+          <input
+            id="subtitle-font-color-input"
+            type="color"
+            value={fontColor}
+            onChange={(e) => setFontColor(e.target.value)}
+          />
+          <span className="hint">{fontColor.toUpperCase()}</span>
+        </div>
+        <div className="subtitle-color-swatch">
+          <label htmlFor="subtitle-outline-color-input">外框顏色</label>
+          <input
+            id="subtitle-outline-color-input"
+            type="color"
+            value={outlineColor}
+            onChange={(e) => setOutlineColor(e.target.value)}
+          />
+          <span className="hint">{outlineColor.toUpperCase()}</span>
+        </div>
+        {!isDefault && (
+          <button
+            type="button"
+            className="btn-mini"
+            onClick={() => {
+              setFontColor(SUBTITLE_FONT_COLOR_DEFAULT);
+              setOutlineColor(SUBTITLE_OUTLINE_COLOR_DEFAULT);
+            }}
+          >
+            還原預設（白字黑框）
+          </button>
+        )}
+      </div>
+      <p className="hint" style={{ margin: "6px 0 0" }}>
+        上方的字幕預覽會同步套用這裡選的顏色。
       </p>
     </div>
   );
