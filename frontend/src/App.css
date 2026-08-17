@@ -226,6 +226,107 @@
   letter-spacing: normal;
 }
 
+/* Required/optional marker shown next to a field's label. Kept visually
+   distinct from `.badge` (which flags a script mode as needing Gemini) so
+   the two meanings never blur together at a glance. */
+.field-req-badge {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-radius: 2px;
+  padding: 2px 6px;
+  margin-left: 8px;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.field-req-badge.required {
+  color: var(--state-error);
+  border: 1px solid var(--state-error);
+  background: color-mix(in srgb, var(--state-error) 12%, transparent);
+}
+
+.field-req-badge.optional {
+  color: var(--text-dim);
+  border: 1px solid var(--border);
+  background: var(--surface-raised);
+}
+
+/* ---------- collapsible optional sections ---------- */
+.collapsible-field {
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--surface-raised);
+  overflow: hidden;
+}
+
+.collapsible-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 14px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text);
+  font: inherit;
+}
+
+.collapsible-field.open .collapsible-toggle {
+  border-bottom: 1px solid var(--border);
+}
+
+.collapsible-toggle-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  display: flex;
+  align-items: center;
+}
+
+.collapsible-toggle-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+  min-width: 0;
+}
+
+.collapsible-toggle-summary {
+  font-size: 12px;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 220px;
+}
+
+.collapsible-chevron {
+  color: var(--accent);
+  font-size: 11px;
+  transition: transform 0.15s ease;
+  flex-shrink: 0;
+}
+
+.collapsible-chevron.open {
+  transform: rotate(180deg);
+}
+
+.collapsible-body {
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
 .pacing-toggle {
   display: flex;
   align-items: center;

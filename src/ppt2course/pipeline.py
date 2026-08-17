@@ -33,7 +33,6 @@ from ppt2course.video import (
     DEFAULT_AVATAR_POSITION,
     DEFAULT_AVATAR_SIZE,
     DEFAULT_BGM_VOLUME,
-    DEFAULT_ENABLE_KEN_BURNS,
     DEFAULT_FONT_SIZE,
     DEFAULT_FPS,
     DEFAULT_LOGO_MARGIN,
@@ -232,7 +231,6 @@ def run_pipeline(
     reading_pause_ms: int = 0,
     closing_pause_ms: int = 0,
     target_duration_ms: int | None = None,
-    enable_ken_burns: bool = DEFAULT_ENABLE_KEN_BURNS,
     avoid_voice_overlap: bool = False,
 ) -> dict[str, str | int]:
     try:
@@ -356,7 +354,6 @@ def run_pipeline(
             avatar_position=avatar_position,
             avatar_size=avatar_size,
             avatar_margin=avatar_margin,
-            enable_ken_burns=enable_ken_burns,
             avoid_voice_overlap=avoid_voice_overlap,
         )
     except VideoComposeError as exc:

@@ -52,7 +52,6 @@ from ppt2course.video import (
     DEFAULT_AVATAR_POSITION,
     DEFAULT_AVATAR_SIZE,
     DEFAULT_BGM_VOLUME,
-    DEFAULT_ENABLE_KEN_BURNS,
     DEFAULT_FONT_SIZE,
     DEFAULT_FPS,
     DEFAULT_LOGO_MARGIN,
@@ -187,7 +186,6 @@ def create_app(
         reading_pause_ms: int = Form(0),
         closing_pause_ms: int = Form(0),
         target_duration_ms: int | None = Form(None),
-        enable_ken_burns: bool = Form(DEFAULT_ENABLE_KEN_BURNS),
         avoid_voice_overlap: bool = Form(False),
     ):
         try:
@@ -300,7 +298,6 @@ def create_app(
             reading_pause_ms=reading_pause_ms,
             closing_pause_ms=closing_pause_ms,
             target_duration_ms=target_duration_ms,
-            enable_ken_burns=enable_ken_burns,
             avoid_voice_overlap=avoid_voice_overlap,
         )
         return {"job_id": job_id}

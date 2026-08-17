@@ -64,12 +64,6 @@ AVATAR_SIZES = tuple(_AVATAR_SIZE_HEIGHT_FRACTION)
 DEFAULT_AVATAR_SIZE = "small"
 DEFAULT_AVATAR_MARGIN = 24
 
-# Ken Burns: a barely-there slow zoom (100% -> 103%) across each slide's own
-# on-screen time, meant to keep a static PPT picture from feeling
-# perfectly frozen without ever drawing attention to itself as an "effect".
-KEN_BURNS_ZOOM_MAX = 1.03
-DEFAULT_ENABLE_KEN_BURNS = False
-
 # When True, a slide's narration never starts until the previous slide's
 # own narration (plus its own reading pause) has completely finished —
 # the video still crossfades purely visually, but audio switches from
@@ -248,16 +242,36 @@ def _build_cues(
     # input), the later slide's cues are delayed as a block until they clear
     # the previous slide's last cue by MIN_GAP_MS — so subtitles never
     # overlap, and a slide's own last cue is never cut short.
+    #
+    # The comparison below deliberately uses each slide's *raw* (pre-delay)
+    # last-cue end — never the delayed one — to decide whether the next
+    # slide needs delaying. Every crossfaded boundary structurally overlaps
+    # by ~transition_ms (that's what a crossfade *is*: offsets[i] is placed
+    # transition_ms before slide i-1's narration actually ends), so with a
+    # non-zero transition this delay fires at *every* boundary. Chaining it
+    # off the already-delayed end (as an earlier version did) compounded
+    # that delay by roughly (transition_ms + MIN_GAP_MS) on every single
+    # slide — subtitles drifting several seconds behind the real
+    # audio/video by the back half of a longer deck, while the actual
+    # rendered video (whose xfade/acrossfade offsets are fixed and never
+    # inherit this delay) stayed perfectly on schedule. Anchoring to the
+    # raw end instead keeps each boundary's adjustment a small, constant
+    # amount instead of an ever-growing one, at the cost of tolerating a
+    # brief (typically <= transition_ms) on-screen overlap between two
+    # captions right at the cut — which mirrors what's actually audible
+    # during that same window anyway (both narrations are genuinely
+    # blended together there), so it reads as correct rather than broken.
     reconciled: list[list[SubtitleCue]] = []
-    prev_last_end_ms: int | None = None
+    raw_prev_last_end_ms: int | None = None
     for cues in per_slide_cues:
-        if cues and prev_last_end_ms is not None:
-            min_start = prev_last_end_ms + MIN_GAP_MS
+        raw_last_end_ms = cues[-1].end_ms if cues else None
+        if cues and raw_prev_last_end_ms is not None:
+            min_start = raw_prev_last_end_ms + MIN_GAP_MS
             if cues[0].start_ms < min_start:
                 cues = _delay_cues(cues, min_start - cues[0].start_ms)
         reconciled.append(cues)
-        if cues:
-            prev_last_end_ms = cues[-1].end_ms
+        if raw_last_end_ms is not None:
+            raw_prev_last_end_ms = raw_last_end_ms
 
     flat = [cue for cues in reconciled for cue in cues]
     return [
@@ -278,26 +292,6 @@ def _scale_pad_filter(
     return (
         f"[{index}:v]scale={width}:{height}:force_original_aspect_ratio=decrease,"
         f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps}[{label}]"
-    )
-
-
-def _ken_burns_filter(
-    index: int, out_label: str, width: int, height: int, fps: int, duration_ms: int
-) -> str:
-    # zoompan's own s= already crops-to-fill a WxH canvas (like
-    # _cover_scale_filter's "cover" behavior) as it zooms, so this replaces
-    # _scale_pad_filter entirely for a Ken-Burns slide rather than
-    # composing with it. `on` is zoompan's own output-frame counter; tying
-    # the zoom expression to on/total_frames (not to a fixed per-frame
-    # increment) makes the ramp reach exactly KEN_BURNS_ZOOM_MAX by this
-    # slide's own last frame regardless of how long it's on screen.
-    total_frames = max(1, round(duration_ms / 1000 * fps))
-    zoom_expr = f"min(1+({KEN_BURNS_ZOOM_MAX}-1)*on/{total_frames},{KEN_BURNS_ZOOM_MAX})"
-    return (
-        f"[{index}:v]scale={width}:{height}:force_original_aspect_ratio=increase,"
-        f"crop={width}:{height},setsar=1,fps={fps},"
-        f"zoompan=z='{zoom_expr}':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
-        f"s={width}x{height}:fps={fps},setsar=1[{out_label}]"
     )
 
 
@@ -516,7 +510,6 @@ def _build_ffmpeg_command(
     avatar_position: str = DEFAULT_AVATAR_POSITION,
     avatar_size: str = DEFAULT_AVATAR_SIZE,
     avatar_margin: int = DEFAULT_AVATAR_MARGIN,
-    enable_ken_burns: bool = DEFAULT_ENABLE_KEN_BURNS,
     avoid_voice_overlap: bool = DEFAULT_AVOID_VOICE_OVERLAP,
     audio_pad_durations_ms: list[int] | None = None,
 ) -> list[str]:
@@ -558,21 +551,11 @@ def _build_ffmpeg_command(
 
         if not needs_own_label:
             base_label = f"v{i}"
-            if enable_ken_burns:
-                scale_filters.append(
-                    _ken_burns_filter(i, base_label, width, height, fps, durations_ms[i])
-                )
-            else:
-                scale_filters.append(_scale_pad_filter(i, width, height, fps))
+            scale_filters.append(_scale_pad_filter(i, width, height, fps))
             continue
 
         base_label = f"v{i}base"
-        if enable_ken_burns:
-            scale_filters.append(
-                _ken_burns_filter(i, base_label, width, height, fps, durations_ms[i])
-            )
-        else:
-            scale_filters.append(_scale_pad_filter(i, width, height, fps, out_label=base_label))
+        scale_filters.append(_scale_pad_filter(i, width, height, fps, out_label=base_label))
         current_label = base_label
 
         if has_broll:
@@ -786,7 +769,6 @@ def compose_video(
     avatar_position: str = DEFAULT_AVATAR_POSITION,
     avatar_size: str = DEFAULT_AVATAR_SIZE,
     avatar_margin: int = DEFAULT_AVATAR_MARGIN,
-    enable_ken_burns: bool = DEFAULT_ENABLE_KEN_BURNS,
     avoid_voice_overlap: bool = DEFAULT_AVOID_VOICE_OVERLAP,
 ) -> None:
     if not slides:
@@ -827,30 +809,44 @@ def compose_video(
     # Reassigned (not a new variable) so every downstream use of
     # transition_duration_ms below — offsets, subtitle cues, and the ffmpeg
     # xfade/acrossfade filters — automatically agrees on the same,
-    # per-slide-visual-duration-safe value.
+    # per-slide-visual-duration-safe value. The safety clamp itself is
+    # always computed against the real (unextended) visual_durations_ms
+    # below, regardless of avoid_voice_overlap — extending durations only
+    # ever adds room, never removes it, so clamping against the
+    # unextended figures stays conservative either way.
     transition_duration_ms = _effective_transition_ms(visual_durations_ms, transition_duration_ms)
-    offsets_ms = _compute_slide_offsets(visual_durations_ms, transition_duration_ms)
 
     # avoid_voice_overlap: audio can no longer borrow transition_duration_ms
-    # back from the next slide's start the way the video crossfade does, so
-    # its own offsets are a plain concatenation (transition_ms=0 reproduces
+    # back from the next slide's start the way a normal crossfade does, so
+    # its own placement is a plain concatenation (transition_ms=0 reproduces
     # exactly that — no slide's audio starts before the previous one, plus
-    # its own reading pause, has fully finished). The video crossfade chain
-    # itself is untouched (still uses offsets_ms/visual_durations_ms above)
-    # — only the *last* slide's own on-screen hold time is stretched by
-    # however much shorter the crossfade-compressed video would otherwise
-    # be than the now-uncompressed audio, so the picture simply holds until
-    # the audio (which is definitionally longer whenever there's more than
-    # one slide) finishes, instead of the video ending first and the audio
-    # being cut off.
+    # its own reading pause, has fully finished; see cue_transition_ms
+    # below, which the audio's own apad+concat chain is built to match).
+    #
+    # The video's crossfade must land on that *same* concatenated timeline,
+    # not the usual compressed one — otherwise slide i's picture appears up
+    # to (i * transition_duration_ms) *before* its narration has even
+    # started once a deck runs more than a couple of slides, which is
+    # exactly the "投影片已經換了，字幕/旁白還在講上一頁" bug this feature
+    # was supposed to prevent, not reproduce. Every slide except the first
+    # gets its own raw on-screen duration padded by transition_duration_ms
+    # before being run through the *same* compression-based offset math
+    # used everywhere else; algebraically that lands each xfade so it
+    # finishes blending into slide i at the exact instant slide i's
+    # (concatenated) audio begins — see test_video.py for the derivation
+    # spelled out slide by slide. Static looped images have no visible
+    # content of their own, so "borrowing" extra raw duration to blend from
+    # doesn't change what the transition looks like, only when it lands.
     video_durations_ms = visual_durations_ms
     cue_transition_ms = transition_duration_ms
     if avoid_voice_overlap and len(slides) > 1:
         cue_transition_ms = 0
-        uncompressed_total_ms = _total_duration_ms(visual_durations_ms, 0)
-        compressed_total_ms = _total_duration_ms(visual_durations_ms, transition_duration_ms)
-        video_durations_ms = list(visual_durations_ms)
-        video_durations_ms[-1] += uncompressed_total_ms - compressed_total_ms
+        video_durations_ms = [
+            d if i == 0 else d + transition_duration_ms
+            for i, d in enumerate(visual_durations_ms)
+        ]
+
+    offsets_ms = _compute_slide_offsets(video_durations_ms, transition_duration_ms)
 
     # A per-job custom dictionary needs its own isolated jieba.Tokenizer (see
     # wordseg.py) — the shared default segmenter otherwise covers every job
@@ -888,7 +884,6 @@ def compose_video(
             avatar_position=avatar_position,
             avatar_size=avatar_size,
             avatar_margin=avatar_margin,
-            enable_ken_burns=enable_ken_burns,
             avoid_voice_overlap=avoid_voice_overlap,
             audio_pad_durations_ms=visual_durations_ms,
         )

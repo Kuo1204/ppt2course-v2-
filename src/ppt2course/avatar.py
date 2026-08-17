@@ -1,6 +1,6 @@
 """2D presenter avatar — mouth-flap timing derived from real narration audio.
 
-Like every other optional visual add-on in this pipeline (B-roll, Ken Burns),
+Like every other optional visual add-on in this pipeline (B-roll),
 the avatar is strictly a decoration layered on top of the Narration Audio
 master timeline: it never triggers a new TTS call, never changes a slide's
 own audio duration, and a problem here (missing asset, bad config) degrades

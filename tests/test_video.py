@@ -18,7 +18,6 @@ from ppt2course.video import (
     _compute_slide_offsets,
     _concatenate_with_intro_outro,
     _effective_transition_ms,
-    _ken_burns_filter,
     _mix_background_music,
     _scale_pad_filter,
     _total_duration_ms,
@@ -162,22 +161,33 @@ def test_build_cues_uses_word_segmenter_to_protect_a_span_from_a_hard_cut():
     assert any(term in c.text for c in cues_with)
 
 
-def test_build_cues_delay_propagates_to_third_slide():
-    slide1 = _slide([TimedChunk("一", 0, 1000), TimedChunk("。", 1000, 1000)])
-    slide2 = _slide([TimedChunk("二", 0, 200), TimedChunk("。", 200, 200)])
-    slide3 = _slide([TimedChunk("三", 0, 500), TimedChunk("。", 500, 500)])
-    # slide2 offset = 1000-500=500 -> overlaps slide1 (ends 1000) -> delayed
-    # by 600 to start at 1100, its own cue ends at 1100+200=1300.
-    # slide3 offset = offsets[1]+durations[1]-transition = 500+700-500=700,
-    # which is before slide2's now-delayed end (1300) -> slide3 also delayed.
-    cues = _build_cues(
-        [slide1, slide2, slide3], durations_ms=[1000, 700, 600], transition_ms=500
-    )
+def test_build_cues_overlap_delay_does_not_cascade_across_many_slides():
+    # Regression test for a real bug: with a non-zero transition, every
+    # crossfaded boundary structurally overlaps by ~transition_ms (offsets[i]
+    # is placed transition_ms before slide i-1's narration actually ends), so
+    # the MIN_GAP_MS reconciliation below fires at *every* boundary. An
+    # earlier version chained each slide's required delay off the previous
+    # slide's already-delayed end, so the delay compounded by roughly
+    # (transition_ms + MIN_GAP_MS) on every single slide — by slide 10 of a
+    # real deck, subtitles could drift several seconds behind the actual
+    # (unaffected) audio/video, producing exactly the "投影片已經換了，字幕
+    # 還在講上一頁" symptom. Four equal-length, fully-spoken slides make that
+    # unbounded growth vs. the correct bounded/constant behavior obvious.
+    slides = [
+        _slide([TimedChunk("字" * (i + 1), 0, 1000)]) for i in range(4)
+    ]
+    cues = _build_cues(slides, durations_ms=[1000, 1000, 1000, 1000], transition_ms=300)
 
-    assert [(c.index, c.start_ms, c.end_ms, c.text) for c in cues] == [
-        (1, 0, 1000, "一"),
-        (2, 1100, 1300, "二"),
-        (3, 1400, 1900, "三"),
+    starts = [c.start_ms for c in cues]
+    delays = [starts[i] - (i * (1000 - 300)) for i in range(4)]
+    # Every boundary needs the same (transition_ms + MIN_GAP_MS) nudge —
+    # constant, not growing slide over slide.
+    assert delays == [0, 400, 400, 400]
+    assert [(c.start_ms, c.end_ms) for c in cues] == [
+        (0, 1000),
+        (1100, 2100),
+        (1800, 2800),
+        (2500, 3500),
     ]
 
 
@@ -712,7 +722,7 @@ def test_build_ffmpeg_command_avoid_voice_overlap_false_is_unchanged():
 
 def test_build_ffmpeg_command_avoid_voice_overlap_pads_audio_to_separate_target():
     # audio_pad_durations_ms lets compose_video give a slide's own apad
-    # target separately from the (possibly last-slide-extended) video hold
+    # target separately from the (possibly transition-padded) video hold
     # time it also passes as durations_ms.
     slide = SlideVideoInput(
         image_path="s1.png", audio_path="a1.mp3", chunks=[TimedChunk("x", 0, 800)],
@@ -720,7 +730,7 @@ def test_build_ffmpeg_command_avoid_voice_overlap_pads_audio_to_separate_target(
     )
     cmd = _build_ffmpeg_command(
         [slide, _slide([TimedChunk("y", 0, 700)])],
-        durations_ms=[2500, 5000],  # last slide's video hold artificially stretched
+        durations_ms=[2500, 5000],  # slide1's video hold artificially padded
         offsets_ms=[0, 2000],
         srt_path="out.srt",
         out_video_path="out.mp4",
@@ -770,17 +780,83 @@ def test_compose_video_avoid_voice_overlap_extends_last_slide_and_uses_pure_conc
                 )
 
     cmd = mock_run.call_args[0][0]
-    # durations_ms=[2000,1000], transition=500 -> compressed total (offsets
-    # [0,1500] + last 1000) = 2500; uncompressed (pure concat) total
-    # (offsets [0,2000] + last 1000) = 3000 -> last slide's video hold time
-    # is stretched by exactly that 500ms difference: 1000 -> 1500.
+    # durations_ms=[2000,1000], transition=500 -> every slide but the first
+    # gets padded by transition_duration_ms before the usual compressed-
+    # offset math runs: slide0 stays 2000ms, slide1 becomes 1000+500=1500ms.
+    # (With only one boundary, this coincides with "the last slide is
+    # stretched by (uncompressed_total - compressed_total)" — see the
+    # 3-slide test below for a case where that coincidence stops holding
+    # and only the fixed version stays correct.)
     ts = [cmd[i + 1] for i, arg in enumerate(cmd) if arg == "-t"]
-    assert ts[:2] == ["2.0", "1.5"]  # slide0 unchanged, slide1 stretched by 500ms
+    assert ts[:2] == ["2.0", "1.5"]
+
+    filter_complex = cmd[cmd.index("-filter_complex") + 1]
+    # The xfade into slide1 now finishes blending (offset + duration) at
+    # exactly 2000ms — the same instant slide1's concatenated audio begins
+    # — instead of the old crossfade-compressed 1500ms, which showed
+    # slide1's picture 500ms before any narration for it had started.
+    assert "offset=1.5" in filter_complex
 
     srt_text = (tmp_path / "out.srt").read_text(encoding="utf-8")
     # Pure-concat cue offset for slide2: exactly slide1's own 2000ms
     # duration, not the crossfade-compressed 1500ms.
     assert "00:00:02,000" in srt_text
+
+
+def test_compose_video_avoid_voice_overlap_video_switch_never_precedes_its_own_audio(
+    tmp_path,
+):
+    # Regression test for a real bug: with 3+ slides, extending only the
+    # *last* slide's hold time (as an earlier version did) left every
+    # interior slide's xfade positioned at the usual crossfade-compressed
+    # offset, which lands earlier and earlier (relative to where that
+    # slide's own concatenated, non-overlapping audio actually starts) the
+    # further into the deck you get — slide 3's picture could appear a full
+    # transition_duration_ms or more before a single word of its narration
+    # had played. Padding every slide but the first keeps each xfade's
+    # finish line exactly aligned with its own slide's audio start, no
+    # matter how many slides precede it.
+    # Durations chosen so _effective_transition_ms's safety clamp (half of
+    # any interior slide's own duration, minus MIN_SLIDE_HOLD_MS) doesn't
+    # kick in and quietly shrink the 500ms transition below what this test
+    # means to exercise.
+    chunks = [TimedChunk("字", 0, 500)]
+    slides = [
+        SlideVideoInput(image_path=f"s{i}.png", audio_path=f"a{i}.mp3", chunks=chunks)
+        for i in range(3)
+    ]
+
+    class FakeResult:
+        returncode = 0
+        stderr = ""
+
+    with patch("ppt2course.video.shutil.which", return_value="/usr/bin/ffmpeg"):
+        with patch(
+            "ppt2course.video.get_audio_duration_ms", side_effect=[4000, 3000, 4000]
+        ):
+            with patch(
+                "ppt2course.video.subprocess.run", return_value=FakeResult()
+            ) as mock_run:
+                compose_video(
+                    slides,
+                    str(tmp_path / "out.mp4"),
+                    str(tmp_path / "out.srt"),
+                    transition_duration_ms=500,
+                    avoid_voice_overlap=True,
+                )
+
+    cmd = mock_run.call_args[0][0]
+    filter_complex = cmd[cmd.index("-filter_complex") + 1]
+
+    # Slide 2 (third slide)'s audio, via the non-overlapping concat chain,
+    # starts at exactly durations[0] + durations[1] = 4000 + 3000 = 7000ms.
+    # Its xfade must finish blending (offset + 0.5s duration) at that same
+    # instant -- offset=6.5 -- not at the crossfade-compressed 6.0s the old
+    # (last-slide-only) fix would have produced.
+    assert "xfade=transition=fade:duration=0.5:offset=6.5[vout]" in filter_complex
+
+    srt_text = (tmp_path / "out.srt").read_text(encoding="utf-8")
+    assert "00:00:07,000" in srt_text
 
 
 # ---- compose_video (mocked subprocess) ----
@@ -1217,77 +1293,3 @@ def test_compose_video_reading_pause_shifts_next_slide_offset_without_touching_f
     assert "apad=whole_dur=3.0" in filter_complex  # 2000ms narration + 1000ms pause
 
 
-# ---- Ken Burns (subtle zoompan) ----
-
-def test_ken_burns_filter_reaches_max_zoom_by_the_last_frame():
-    filt = _ken_burns_filter(0, "v0", 1920, 1080, 30, 2000)  # 2s @ 30fps = 60 frames
-    assert "zoompan=" in filt
-    assert "min(1+(1.03-1)*on/60,1.03)" in filt
-    assert "s=1920x1080" in filt
-    assert "fps=30" in filt
-
-
-def test_build_ffmpeg_command_ken_burns_replaces_scale_pad_for_every_slide():
-    slide1 = _slide([TimedChunk("你好", 0, 800)])
-    slide2 = _slide([TimedChunk("謝謝", 0, 700)])
-    cmd = _build_ffmpeg_command(
-        [slide1, slide2],
-        durations_ms=[2000, 1000],
-        offsets_ms=[0, 1500],
-        srt_path="out.srt",
-        out_video_path="out.mp4",
-        transition="fade",
-        transition_duration_ms=500,
-        resolution=(1920, 1080),
-        fps=30,
-        font_size=64,
-        enable_ken_burns=True,
-    )
-    filter_complex = cmd[cmd.index("-filter_complex") + 1]
-    assert "zoompan=" in filter_complex
-    assert "[0:v]scale=1920:1080:force_original_aspect_ratio=decrease" not in filter_complex
-
-
-def test_build_ffmpeg_command_ken_burns_off_by_default_is_unchanged():
-    slide1 = _slide([TimedChunk("你好", 0, 800)])
-    cmd = _build_ffmpeg_command(
-        [slide1],
-        durations_ms=[2000],
-        offsets_ms=[0],
-        srt_path="out.srt",
-        out_video_path="out.mp4",
-        transition="fade",
-        transition_duration_ms=500,
-        resolution=(1920, 1080),
-        fps=30,
-        font_size=64,
-    )
-    filter_complex = cmd[cmd.index("-filter_complex") + 1]
-    assert "zoompan" not in filter_complex
-
-
-def test_build_ffmpeg_command_ken_burns_composes_with_broll_and_avatar():
-    slide = SlideVideoInput(
-        image_path="s1.png",
-        audio_path="a1.mp3",
-        chunks=[TimedChunk("你好", 0, 800)],
-        broll_overlays=(BrollOverlay(image_path="b.jpg", start_ms=100, end_ms=300),),
-        avatar_overlays=(AvatarOverlay(image_path="idle.png", start_ms=0, end_ms=1000),),
-    )
-    cmd = _build_ffmpeg_command(
-        [slide],
-        durations_ms=[1000],
-        offsets_ms=[0],
-        srt_path="out.srt",
-        out_video_path="out.mp4",
-        transition="fade",
-        transition_duration_ms=500,
-        resolution=(1920, 1080),
-        fps=30,
-        font_size=64,
-        enable_ken_burns=True,
-    )
-    filter_complex = cmd[cmd.index("-filter_complex") + 1]
-    assert "[0:v]" in filter_complex and "zoompan=" in filter_complex
-    assert "[v0base][v0broll0]overlay=enable='between(t,0.1,0.3)'[v0brolled]" in filter_complex
-    assert "[v0brolled][v0avatar0]overlay=" in filter_complex

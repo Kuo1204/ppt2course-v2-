@@ -530,50 +530,6 @@ def test_reading_pause_extends_visual_hold_without_moving_narration_or_subtitles
     assert abs(audio_stream_ms_with - (narration_ms + pause_ms)) <= 150
 
 
-def test_ken_burns_enabled_still_matches_expected_duration_and_resolution_real_ffmpeg(tmp_path):
-    # Ken Burns replaces the scale/pad chain with zoompan entirely for every
-    # slide — this proves that swap doesn't silently break duration,
-    # resolution, or the master narration/subtitle timeline. The actual
-    # zoom-in-crops-tighter-over-time behavior itself was hand-verified
-    # separately (zoompan is well-established ffmpeg machinery); this test
-    # guards the integration, not the visual effect.
-    voice = "zh-TW-HsiaoChenNeural"
-
-    img1 = str(tmp_path / "slide1.png")
-    img2 = str(tmp_path / "slide2.png")
-    _make_color_image(img1, "red")
-    _make_color_image(img2, "blue")
-    audio1 = str(tmp_path / "slide1.mp3")
-    audio2 = str(tmp_path / "slide2.mp3")
-    chunks1 = synthesize("你好嗎？", voice, audio1)
-    chunks2 = synthesize("我很好，謝謝。", voice, audio2)
-
-    slides = [
-        SlideVideoInput(image_path=img1, audio_path=audio1, chunks=chunks1),
-        SlideVideoInput(image_path=img2, audio_path=audio2, chunks=chunks2),
-    ]
-
-    out_video = str(tmp_path / "out.mp4")
-    out_srt = str(tmp_path / "out.srt")
-    transition_ms = 500
-    durations_ms = [get_audio_duration_ms(audio1), get_audio_duration_ms(audio2)]
-
-    compose_video(
-        slides, out_video, out_srt,
-        resolution=(640, 480), fps=24,
-        transition_duration_ms=transition_ms, enable_ken_burns=True,
-    )
-
-    assert os.path.exists(out_video)
-    expected_total_ms = _total_duration_ms(durations_ms, transition_ms)
-    assert abs(get_audio_duration_ms(out_video) - expected_total_ms) <= 200
-    assert _get_resolution(out_video) == (640, 480)
-
-    srt_text = open(out_srt, encoding="utf-8").read()
-    assert "你好嗎" in srt_text
-    assert "我很好" in srt_text
-
-
 def test_avoid_voice_overlap_produces_a_real_gap_and_matches_pure_concat_length_real_ffmpeg(
     tmp_path,
 ):
@@ -645,3 +601,92 @@ def test_avoid_voice_overlap_produces_a_real_gap_and_matches_pure_concat_length_
     later_cue_starts = [t for t in cue_starts_ms if t >= narration_ms[0] - 50]
     assert later_cue_starts, cue_starts_ms
     assert min(later_cue_starts) - narration_ms[0] <= 150
+
+
+def test_avoid_voice_overlap_video_stays_synced_with_audio_across_three_slides_real_ffmpeg(
+    tmp_path,
+):
+    # Real end-to-end proof for a reported bug: with 3+ slides, an earlier
+    # version of avoid_voice_overlap positioned the video's own crossfades
+    # using the standard crossfade-*compressed* offsets while the audio
+    # (concatenated with no overlap at all) sat on a longer, uncompressed
+    # timeline -- so slide 3's picture could appear a full
+    # transition_duration_ms or more before a single word of its narration
+    # had played, i.e. "投影片已經換了，但字幕/旁白還在講上一頁". This
+    # samples real decoded frames (not just SRT text) around the moment
+    # slide 3's audio actually starts to prove the picture doesn't jump
+    # ahead of it.
+    voice = "zh-TW-HsiaoChenNeural"
+    resolution = (640, 480)
+    transition_ms = 500
+
+    img1 = str(tmp_path / "slide1.png")
+    img2 = str(tmp_path / "slide2.png")
+    img3 = str(tmp_path / "slide3.png")
+    _make_color_image(img1, "red")
+    _make_color_image(img2, "blue")
+    _make_color_image(img3, "green")
+    audio1 = str(tmp_path / "slide1.mp3")
+    audio2 = str(tmp_path / "slide2.mp3")
+    audio3 = str(tmp_path / "slide3.mp3")
+    # Deliberately longer sentences so each slide's real edge-tts audio
+    # comfortably clears _effective_transition_ms's safety clamp (half of
+    # an interior slide's own duration, minus MIN_SLIDE_HOLD_MS) and the
+    # requested 500ms transition survives unclamped.
+    chunks1 = synthesize("這是第一頁的完整內容說明，包含足夠長的句子以避免轉場被截斷。", voice, audio1)
+    chunks2 = synthesize("這是第二頁的完整內容說明，同樣包含足夠長的句子以確保測試穩定。", voice, audio2)
+    chunks3 = synthesize("這是第三頁的完整內容說明，用來驗證畫面與聲音是否正確同步。", voice, audio3)
+    narration_ms = [
+        get_audio_duration_ms(audio1),
+        get_audio_duration_ms(audio2),
+        get_audio_duration_ms(audio3),
+    ]
+
+    slides = [
+        SlideVideoInput(image_path=img1, audio_path=audio1, chunks=chunks1),
+        SlideVideoInput(image_path=img2, audio_path=audio2, chunks=chunks2),
+        SlideVideoInput(image_path=img3, audio_path=audio3, chunks=chunks3),
+    ]
+
+    out_video = str(tmp_path / "out.mp4")
+    out_srt = str(tmp_path / "out.srt")
+    compose_video(
+        slides, out_video, out_srt,
+        resolution=resolution, fps=24,
+        transition_duration_ms=transition_ms, avoid_voice_overlap=True,
+    )
+
+    # Pure concatenation (no crossfade savings) -- slide 3's audio starts
+    # exactly when slides 1 and 2's own narration has fully finished.
+    slide3_audio_start_ms = narration_ms[0] + narration_ms[1]
+
+    def _dominant_channel(pixel: tuple[int, int, int]) -> str:
+        r, g, b = pixel
+        if r > g + 40 and r > b + 40:
+            return "red"
+        if b > r + 40 and b > g + 40:
+            return "blue"
+        if g > r + 40 and g > b + 40:
+            return "green"
+        return "other"
+
+    def _sample_center_at(seconds: float) -> tuple[int, int, int]:
+        frame_path = str(tmp_path / f"frame_{seconds:.3f}.png")
+        subprocess.run(
+            ["ffmpeg", "-y", "-ss", f"{max(seconds, 0):.3f}", "-i", out_video,
+             "-frames:v", "1", frame_path],
+            check=True, capture_output=True,
+        )
+        return Image.open(frame_path).convert("RGB").getpixel((320, 240))
+
+    # 300ms before slide 3's audio actually starts, the picture must NOT
+    # already be slide 3 (green) -- it should still be showing (or
+    # blending from) slide 2. The old bug would have already fully
+    # switched to slide 3 well before this point.
+    before_pixel = _sample_center_at((slide3_audio_start_ms - 300) / 1000)
+    assert _dominant_channel(before_pixel) != "green", before_pixel
+
+    # 300ms after slide 3's audio starts, the picture must have caught up
+    # to slide 3 (green).
+    after_pixel = _sample_center_at((slide3_audio_start_ms + 300) / 1000)
+    assert _dominant_channel(after_pixel) == "green", after_pixel

@@ -279,7 +279,6 @@ function App() {
   const [closingPauseSec, setClosingPauseSec] = useState(0);
   const [targetDurationEnabled, setTargetDurationEnabled] = useState(false);
   const [targetDurationSec, setTargetDurationSec] = useState(120);
-  const [enableKenBurns, setEnableKenBurns] = useState(false);
   const [avoidVoiceOverlap, setAvoidVoiceOverlap] = useState(false);
 
   const [visualAnalysisStatus, setVisualAnalysisStatus] = useState("idle"); // idle | loading | done | error
@@ -698,7 +697,6 @@ function App() {
       if (readingPauseSec > 0) form.append("reading_pause_ms", String(Math.round(readingPauseSec * 1000)));
       if (closingPauseSec > 0) form.append("closing_pause_ms", String(Math.round(closingPauseSec * 1000)));
     }
-    if (enableKenBurns) form.append("enable_ken_burns", "true");
     if (avoidVoiceOverlap) form.append("avoid_voice_overlap", "true");
 
     const confirmedBrollSelections = Object.entries(brollChoices)
@@ -871,8 +869,6 @@ function App() {
                 setTargetDurationEnabled={setTargetDurationEnabled}
                 targetDurationSec={targetDurationSec}
                 setTargetDurationSec={setTargetDurationSec}
-                enableKenBurns={enableKenBurns}
-                setEnableKenBurns={setEnableKenBurns}
                 avoidVoiceOverlap={avoidVoiceOverlap}
                 setAvoidVoiceOverlap={setAvoidVoiceOverlap}
               />
@@ -932,7 +928,6 @@ function App() {
                       `節奏停頓（每頁 +${readingPauseSec.toFixed(1)}s${
                         closingPauseSec > 0 ? `・結尾 +${closingPauseSec.toFixed(1)}s` : ""
                       }）`,
-                  enableKenBurns && "輕微縮放動畫（Ken Burns）",
                   avoidVoiceOverlap && "轉場後才開口（聲音不重疊）",
                 ].filter(Boolean)}
               />
@@ -998,7 +993,9 @@ function UploadStep({
       <CardHead eyebrow="Step 01" title="上傳投影片" trailing={slideCountTrailing} />
       <div className="field-grid">
         <div className="field full">
-          <label htmlFor="pptx-input">PPTX 檔案</label>
+          <label htmlFor="pptx-input">
+            PPTX 檔案 <FieldTag required />
+          </label>
           <div className="uploader">
             <input
               id="pptx-input"
@@ -1055,7 +1052,8 @@ function UploadStep({
 
         <div className="field full">
           <label htmlFor="images-input">
-            每頁投影片的圖片 <span className="hint">— 依順序全選，張數需與 PPTX 頁數相同</span>
+            每頁投影片的圖片 <FieldTag required />{" "}
+            <span className="hint">— 依順序全選，張數需與 PPTX 頁數相同</span>
           </label>
           <div className="uploader">
             <input
@@ -1080,7 +1078,10 @@ function UploadStep({
         </div>
 
         <div className="field full">
-          <label htmlFor="base-name-input">課程名稱（輸出檔名）</label>
+          <label htmlFor="base-name-input">
+            課程名稱（輸出檔名） <FieldTag required={false} />{" "}
+            <span className="hint">— 留空預設為「課程」</span>
+          </label>
           <input
             id="base-name-input"
             type="text"
@@ -1209,7 +1210,9 @@ function ScriptStep({
       <CardHead eyebrow="Step 02" title="講稿來源" trailing={slideCount ? `${slideCount} 頁投影片` : null} />
       <div className="field-grid">
         <div className="field full">
-          <label>模式</label>
+          <label>
+            模式 <FieldTag required />
+          </label>
           <div className="mode-picker">
             {SCRIPT_MODES.map((m) => (
               <button
@@ -1229,7 +1232,8 @@ function ScriptStep({
         {modeConfig.needsApiKey && (
           <div className="field full">
             <label htmlFor="gemini-key-input">
-              Gemini API Key <span className="hint">— 只用於這次任務，不會被儲存</span>
+              Gemini API Key <FieldTag required />{" "}
+              <span className="hint">— 只用於這次任務，不會被儲存</span>
             </label>
             <input
               id="gemini-key-input"
@@ -1308,6 +1312,9 @@ function ScriptStep({
 
         {modeConfig.needsTexts && slideCount > 0 && (
           <div className="field full">
+            <label>
+              {scriptMode === "POLISH" ? "潤飾前的草稿" : "逐頁講稿"} <FieldTag required />
+            </label>
             <div className="tab-group" role="tablist">
               <button
                 type="button"
@@ -1424,10 +1431,12 @@ function VoiceStep({
 
   return (
     <>
-      <CardHead eyebrow="Step 03" title="語音與轉場" />
+      <CardHead eyebrow="Step 03" title="語音與轉場" trailing="全部已有預設值" />
       <div className="field-grid">
         <div className="field">
-          <label htmlFor="voice-select">配音語者</label>
+          <label htmlFor="voice-select">
+            配音語者 <FieldTag required={false} />
+          </label>
           <div className="field-with-action">
             <select id="voice-select" value={voice} onChange={(e) => setVoice(e.target.value)}>
               {VOICES.map((v) => (
@@ -1453,7 +1462,9 @@ function VoiceStep({
         </div>
 
         <div className="field">
-          <label htmlFor="transition-select">轉場效果</label>
+          <label htmlFor="transition-select">
+            轉場效果 <FieldTag required={false} />
+          </label>
           <select
             id="transition-select"
             value={transition}
@@ -1469,7 +1480,7 @@ function VoiceStep({
 
         <div className="field">
           <label htmlFor="rate-range">
-            語速 <span className="hint">{formatPercent(voiceRate)}</span>
+            語速 <FieldTag required={false} /> <span className="hint">{formatPercent(voiceRate)}</span>
           </label>
           <input
             id="rate-range"
@@ -1484,7 +1495,7 @@ function VoiceStep({
 
         <div className="field">
           <label htmlFor="volume-range">
-            音量 <span className="hint">{formatPercent(voiceVolume)}</span>
+            音量 <FieldTag required={false} /> <span className="hint">{formatPercent(voiceVolume)}</span>
           </label>
           <input
             id="volume-range"
@@ -1498,7 +1509,9 @@ function VoiceStep({
         </div>
 
         <div className="field">
-          <label htmlFor="transition-ms-select">轉場時間</label>
+          <label htmlFor="transition-ms-select">
+            轉場時間 <FieldTag required={false} />
+          </label>
           <select
             id="transition-ms-select"
             value={transitionDurationMs}
@@ -1557,8 +1570,6 @@ function ExtrasStep({
   setTargetDurationEnabled,
   targetDurationSec,
   setTargetDurationSec,
-  enableKenBurns,
-  setEnableKenBurns,
   avoidVoiceOverlap,
   setAvoidVoiceOverlap,
 }) {
@@ -1567,7 +1578,9 @@ function ExtrasStep({
       <CardHead eyebrow="Step 04" title="進階選項" trailing="全部選填" />
       <div className="field-grid">
         <div className="field">
-          <label htmlFor="resolution-select">解析度</label>
+          <label htmlFor="resolution-select">
+            解析度 <FieldTag required={false} />
+          </label>
           <select
             id="resolution-select"
             value={resolution}
@@ -1582,7 +1595,9 @@ function ExtrasStep({
         </div>
 
         <div className="field">
-          <label htmlFor="font-size-select">字幕大小</label>
+          <label htmlFor="font-size-select">
+            字幕大小 <FieldTag required={false} />
+          </label>
           <select
             id="font-size-select"
             value={fontSize}
@@ -1596,20 +1611,6 @@ function ExtrasStep({
           </select>
         </div>
 
-        <div className="field full">
-          <label htmlFor="custom-dict-textarea">自訂詞庫</label>
-          <textarea
-            id="custom-dict-textarea"
-            rows={3}
-            value={customDict}
-            onChange={(e) => setCustomDict(e.target.value)}
-            placeholder={"每行一個詞，例如公司名稱或專業術語：\n普拉斯提亞雲端\n職場健康促進計畫"}
-          />
-          <p className="hint" style={{ margin: "6px 0 0" }}>
-            讓字幕換行辨識這些詞，不會把它們從中間拆成兩行；不影響配音發音。
-          </p>
-        </div>
-
         <SubtitlePositionField
           percent={subtitlePositionPercent}
           setPercent={setSubtitlePositionPercent}
@@ -1617,48 +1618,105 @@ function ExtrasStep({
           fontSize={fontSize}
         />
 
-        <LogoField
-          file={logoFile}
-          onChange={setLogoFile}
-          opacity={logoOpacity}
-          setOpacity={setLogoOpacity}
-          position={logoPosition}
-          setPosition={setLogoPosition}
-          size={logoSize}
-          setSize={setLogoSize}
-          resolution={resolution}
-          previewImageUrl={previewImageUrl}
-        />
-        <FileField label="背景音樂" file={bgmFile} onChange={setBgmFile} accept="audio/*" />
-        <FileField label="片頭影片" file={introFile} onChange={setIntroFile} accept="video/*" />
-        <FileField label="片尾影片" file={outroFile} onChange={setOutroFile} accept="video/*" />
+        <CollapsibleField
+          title="自訂詞庫"
+          defaultOpen={customDict.trim().length > 0}
+          summary={
+            customDict.trim()
+              ? `${customDict.split("\n").filter((l) => l.trim()).length} 個詞`
+              : "尚未設定"
+          }
+        >
+          <div className="field full">
+            <label htmlFor="custom-dict-textarea">字幕斷詞用詞庫</label>
+            <textarea
+              id="custom-dict-textarea"
+              rows={3}
+              value={customDict}
+              onChange={(e) => setCustomDict(e.target.value)}
+              placeholder={"每行一個詞，例如公司名稱或專業術語：\n普拉斯提亞雲端\n職場健康促進計畫"}
+            />
+            <p className="hint" style={{ margin: "6px 0 0" }}>
+              讓字幕換行辨識這些詞，不會把它們從中間拆成兩行；不影響配音發音。
+            </p>
+          </div>
+        </CollapsibleField>
 
-        <AvatarField
-          mode={avatarMode}
-          setMode={setAvatarMode}
-          position={avatarPosition}
-          setPosition={setAvatarPosition}
-          size={avatarSize}
-          setSize={setAvatarSize}
-          customSlides={avatarCustomSlides}
-          setCustomSlides={setAvatarCustomSlides}
-          slideCount={slideCount}
-        />
+        <CollapsibleField
+          title="Logo 圖片（浮水印）"
+          defaultOpen={Boolean(logoFile)}
+          summary={logoFile ? logoFile.name : "尚未設定"}
+        >
+          <LogoField
+            file={logoFile}
+            onChange={setLogoFile}
+            opacity={logoOpacity}
+            setOpacity={setLogoOpacity}
+            position={logoPosition}
+            setPosition={setLogoPosition}
+            size={logoSize}
+            setSize={setLogoSize}
+            resolution={resolution}
+            previewImageUrl={previewImageUrl}
+          />
+        </CollapsibleField>
 
-        <PacingField
-          readingPauseSec={readingPauseSec}
-          setReadingPauseSec={setReadingPauseSec}
-          closingPauseSec={closingPauseSec}
-          setClosingPauseSec={setClosingPauseSec}
-          targetDurationEnabled={targetDurationEnabled}
-          setTargetDurationEnabled={setTargetDurationEnabled}
-          targetDurationSec={targetDurationSec}
-          setTargetDurationSec={setTargetDurationSec}
-          enableKenBurns={enableKenBurns}
-          setEnableKenBurns={setEnableKenBurns}
-          avoidVoiceOverlap={avoidVoiceOverlap}
-          setAvoidVoiceOverlap={setAvoidVoiceOverlap}
-        />
+        <CollapsibleField
+          title="背景音樂／片頭／片尾影片"
+          defaultOpen={Boolean(bgmFile || introFile || outroFile)}
+          summary={
+            [bgmFile && "背景音樂", introFile && "片頭", outroFile && "片尾"].filter(Boolean).join("、") ||
+            "尚未設定"
+          }
+        >
+          <div className="field-grid">
+            <FileField label="背景音樂" file={bgmFile} onChange={setBgmFile} accept="audio/*" />
+            <FileField label="片頭影片" file={introFile} onChange={setIntroFile} accept="video/*" />
+            <FileField label="片尾影片" file={outroFile} onChange={setOutroFile} accept="video/*" />
+          </div>
+        </CollapsibleField>
+
+        <CollapsibleField
+          title="2D 講師 Avatar"
+          defaultOpen={avatarMode !== "none"}
+          summary={AVATAR_MODES.find((m) => m.value === avatarMode)?.label}
+        >
+          <AvatarField
+            mode={avatarMode}
+            setMode={setAvatarMode}
+            position={avatarPosition}
+            setPosition={setAvatarPosition}
+            size={avatarSize}
+            setSize={setAvatarSize}
+            customSlides={avatarCustomSlides}
+            setCustomSlides={setAvatarCustomSlides}
+            slideCount={slideCount}
+          />
+        </CollapsibleField>
+
+        <CollapsibleField
+          title="節奏控制（停頓 ／ 聲音重疊）"
+          defaultOpen={
+            readingPauseSec > 0 ||
+            closingPauseSec > 0 ||
+            targetDurationEnabled ||
+            avoidVoiceOverlap
+          }
+          summary="使用預設節奏"
+        >
+          <PacingField
+            readingPauseSec={readingPauseSec}
+            setReadingPauseSec={setReadingPauseSec}
+            closingPauseSec={closingPauseSec}
+            setClosingPauseSec={setClosingPauseSec}
+            targetDurationEnabled={targetDurationEnabled}
+            setTargetDurationEnabled={setTargetDurationEnabled}
+            targetDurationSec={targetDurationSec}
+            setTargetDurationSec={setTargetDurationSec}
+            avoidVoiceOverlap={avoidVoiceOverlap}
+            setAvoidVoiceOverlap={setAvoidVoiceOverlap}
+          />
+        </CollapsibleField>
       </div>
     </>
   );
@@ -1690,14 +1748,11 @@ function PacingField({
   setTargetDurationEnabled,
   targetDurationSec,
   setTargetDurationSec,
-  enableKenBurns,
-  setEnableKenBurns,
   avoidVoiceOverlap,
   setAvoidVoiceOverlap,
 }) {
   return (
-    <div className="field full">
-      <label>節奏控制</label>
+    <>
       <p className="hint" style={{ margin: "0 0 8px" }}>
         只會延長畫面停留（必要時加上靜音），不會改變任何一句旁白配音本身的長度或語速。
       </p>
@@ -1765,15 +1820,6 @@ function PacingField({
       <label className="pacing-toggle" style={{ marginTop: 10 }}>
         <input
           type="checkbox"
-          checked={enableKenBurns}
-          onChange={(e) => setEnableKenBurns(e.target.checked)}
-        />
-        輕微縮放動畫（Ken Burns，讓靜態畫面不那麼死板）
-      </label>
-
-      <label className="pacing-toggle" style={{ marginTop: 10 }}>
-        <input
-          type="checkbox"
           checked={avoidVoiceOverlap}
           onChange={(e) => setAvoidVoiceOverlap(e.target.checked)}
         />
@@ -1784,7 +1830,7 @@ function PacingField({
           畫面轉場動畫照舊播放，但下一頁的旁白會等上一頁完全講完（含閱讀停頓）才開始出聲；整支影片的總長度會因此變長，不會再因為轉場而縮短。
         </p>
       )}
-    </div>
+    </>
   );
 }
 
@@ -1808,8 +1854,8 @@ function AvatarField({
   }
 
   return (
-    <div className="field full">
-      <label htmlFor="avatar-mode-select">2D 講師 Avatar</label>
+    <>
+      <label htmlFor="avatar-mode-select">顯示模式</label>
       <select
         id="avatar-mode-select"
         value={mode}
@@ -1875,7 +1921,7 @@ function AvatarField({
           )}
         </div>
       )}
-    </div>
+    </>
   );
 }
 
@@ -1900,7 +1946,7 @@ function SubtitlePositionField({ percent, setPercent, previewImageUrl, fontSize 
   return (
     <div className="field full">
       <label htmlFor="subtitle-position-range">
-        字幕高度 <span className="hint">{percent}%（距離畫面底部）</span>
+        字幕高度 <FieldTag required={false} /> <span className="hint">{percent}%（距離畫面底部）</span>
       </label>
       <input
         id="subtitle-position-range"
@@ -1996,8 +2042,7 @@ function LogoField({
   }
 
   return (
-    <div className="field full">
-      <label>Logo 圖片（浮水印）</label>
+    <>
       <div className="uploader">
         <input
           key={resetKey}
@@ -2100,7 +2145,7 @@ function LogoField({
           </p>
         </div>
       )}
-    </div>
+    </>
   );
 }
 
@@ -2162,7 +2207,11 @@ function VisualsStep({
 
   return (
     <>
-      <CardHead eyebrow="Step 05" title="AI 視覺素材" trailing={slideCount ? `${slideCount} 頁投影片` : null} />
+      <CardHead
+        eyebrow="Step 05"
+        title="AI 視覺素材"
+        trailing={slideCount ? `${slideCount} 頁投影片・全部選填` : "全部選填"}
+      />
       <div className="field-grid">
         <div className="field full">
           <p className="hint">
@@ -2406,6 +2455,51 @@ function ReviewStep({
         ))}
       </dl>
     </>
+  );
+}
+
+// Marks a field's label as either "必填" (blocks moving on if left empty) or
+// "選填" (has a working default, or is an entirely optional add-on). Kept as
+// a tiny standalone component so every field spells out the same rule in
+// the same place, instead of each step inventing its own wording.
+function FieldTag({ required }) {
+  return (
+    <span className={"field-req-badge" + (required ? " required" : " optional")}>
+      {required ? "必填" : "選填"}
+    </span>
+  );
+}
+
+// Collapsed-by-default wrapper for an optional feature block (Logo, BGM,
+// Avatar, pacing controls, ...). `defaultOpen` should reflect whether the
+// field already carries a non-default value (e.g. a file was already
+// chosen) so returning to this step doesn't hide something the user already
+// set up. Each step remounts this component fresh when the wizard
+// navigates away and back, so re-deriving `defaultOpen` from current state
+// on mount is enough — no extra sync effect needed.
+function CollapsibleField({ title, defaultOpen = false, summary, children }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className={"field full collapsible-field" + (open ? " open" : "")}>
+      <button
+        type="button"
+        className="collapsible-toggle"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+      >
+        <span className="collapsible-toggle-title">
+          {title}
+          <FieldTag required={false} />
+        </span>
+        <span className="collapsible-toggle-right">
+          {!open && summary && <span className="collapsible-toggle-summary">{summary}</span>}
+          <span className={"collapsible-chevron" + (open ? " open" : "")} aria-hidden="true">
+            ▾
+          </span>
+        </span>
+      </button>
+      {open && <div className="collapsible-body">{children}</div>}
+    </div>
   );
 }
 
