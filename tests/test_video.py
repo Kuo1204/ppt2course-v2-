@@ -385,6 +385,28 @@ def test_build_ffmpeg_command_default_subtitle_colors_unchanged():
     filter_complex = cmd[cmd.index("-filter_complex") + 1]
     assert "PrimaryColour=&HFFFFFF&" in filter_complex
     assert "OutlineColour=&H000000&" in filter_complex
+    assert "Bold=0" in filter_complex
+
+
+def test_build_ffmpeg_command_subtitle_bold():
+    slide = _slide([TimedChunk("你好", 0, 800)])
+    cmd = _build_ffmpeg_command(
+        [slide],
+        durations_ms=[2000],
+        offsets_ms=[0],
+        srt_path="out.srt",
+        out_video_path="out.mp4",
+        transition="fade",
+        transition_duration_ms=500,
+        resolution=(1920, 1080),
+        fps=30,
+        font_size=22,
+        subtitle_bold=True,
+    )
+    filter_complex = cmd[cmd.index("-filter_complex") + 1]
+    # ASS/libass' Bold style field is boolean: -1 for true, not any other
+    # weight value.
+    assert "Bold=-1" in filter_complex
 
 
 def test_build_ffmpeg_command_custom_subtitle_colors():
@@ -1061,6 +1083,30 @@ def test_compose_video_forwards_subtitle_colors_to_ffmpeg_command(tmp_path):
     filter_complex = cmd[cmd.index("-filter_complex") + 1]
     assert "PrimaryColour=&H000000&" in filter_complex
     assert "OutlineColour=&HFFFFFF&" in filter_complex
+
+
+def test_compose_video_forwards_subtitle_bold_to_ffmpeg_command(tmp_path):
+    slide = _slide([TimedChunk("你好", 0, 800)])
+
+    class FakeResult:
+        returncode = 0
+        stderr = ""
+
+    with patch("ppt2course.video.shutil.which", return_value="/usr/bin/ffmpeg"):
+        with patch("ppt2course.video.get_audio_duration_ms", return_value=1000):
+            with patch(
+                "ppt2course.video.subprocess.run", return_value=FakeResult()
+            ) as mock_run:
+                compose_video(
+                    [slide],
+                    str(tmp_path / "out.mp4"),
+                    str(tmp_path / "out.srt"),
+                    subtitle_bold=True,
+                )
+
+    cmd = mock_run.call_args.args[0]
+    filter_complex = cmd[cmd.index("-filter_complex") + 1]
+    assert "Bold=-1" in filter_complex
 
 
 # ---- _add_logo_overlay / _mix_background_music / _concatenate_with_intro_outro ----

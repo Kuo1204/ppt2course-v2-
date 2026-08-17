@@ -91,6 +91,10 @@ SUBTITLE_FONT_NAME = "Noto Sans CJK TC"
 DEFAULT_SUBTITLE_MARGIN_V = 30
 DEFAULT_SUBTITLE_FONT_COLOR = "#FFFFFF"
 DEFAULT_SUBTITLE_OUTLINE_COLOR = "#000000"
+# ASS/libass styles only ever carry a boolean Bold flag (-1 true / 0 false)
+# — there's no continuous weight scale the way CSS font-weight has one,
+# since it just picks between the family's regular and bold faces.
+DEFAULT_SUBTITLE_BOLD = False
 
 _HEX_COLOR_RE = re.compile(r"^#?([0-9a-fA-F]{6})$")
 
@@ -488,6 +492,7 @@ def _subtitle_filter(
     margin_v: int = DEFAULT_SUBTITLE_MARGIN_V,
     font_color: str = DEFAULT_SUBTITLE_FONT_COLOR,
     outline_color: str = DEFAULT_SUBTITLE_OUTLINE_COLOR,
+    bold: bool = DEFAULT_SUBTITLE_BOLD,
 ) -> tuple[str, str]:
     width, height = resolution
     escaped_path = _escape_ffmpeg_filter_path(srt_path)
@@ -510,6 +515,7 @@ def _subtitle_filter(
     style = (
         f"FontName={SUBTITLE_FONT_NAME},FontSize={font_size},"
         f"PrimaryColour={primary_ass},OutlineColour={outline_ass},"
+        f"Bold={-1 if bold else 0},"
         f"BorderStyle=1,Outline=2,Shadow=0,MarginV={margin_v},"
         f"WrapStyle=2,PlayResX={width},PlayResY={height}"
     )
@@ -531,6 +537,7 @@ def _build_ffmpeg_command(
     subtitle_margin_v: int = DEFAULT_SUBTITLE_MARGIN_V,
     subtitle_font_color: str = DEFAULT_SUBTITLE_FONT_COLOR,
     subtitle_outline_color: str = DEFAULT_SUBTITLE_OUTLINE_COLOR,
+    subtitle_bold: bool = DEFAULT_SUBTITLE_BOLD,
     avatar_position: str = DEFAULT_AVATAR_POSITION,
     avatar_size: str = DEFAULT_AVATAR_SIZE,
     avatar_margin: int = DEFAULT_AVATAR_MARGIN,
@@ -635,6 +642,7 @@ def _build_ffmpeg_command(
     sub_filter, final_video_label = _subtitle_filter(
         srt_path, video_label, font_size, resolution, margin_v=subtitle_margin_v,
         font_color=subtitle_font_color, outline_color=subtitle_outline_color,
+        bold=subtitle_bold,
     )
 
     filter_parts = scale_filters + audio_label_filters
@@ -783,6 +791,7 @@ def compose_video(
     subtitle_margin_v: int = DEFAULT_SUBTITLE_MARGIN_V,
     subtitle_font_color: str = DEFAULT_SUBTITLE_FONT_COLOR,
     subtitle_outline_color: str = DEFAULT_SUBTITLE_OUTLINE_COLOR,
+    subtitle_bold: bool = DEFAULT_SUBTITLE_BOLD,
     logo_path: str | None = None,
     logo_width: int = DEFAULT_LOGO_WIDTH,
     logo_margin: int = DEFAULT_LOGO_MARGIN,
@@ -910,6 +919,7 @@ def compose_video(
             subtitle_margin_v=subtitle_margin_v,
             subtitle_font_color=subtitle_font_color,
             subtitle_outline_color=subtitle_outline_color,
+            subtitle_bold=subtitle_bold,
             avatar_position=avatar_position,
             avatar_size=avatar_size,
             avatar_margin=avatar_margin,

@@ -144,6 +144,39 @@ def test_create_job_rejects_invalid_subtitle_outline_color(tmp_path):
     assert response.status_code == 400
 
 
+def test_create_job_forwards_subtitle_bold(tmp_path):
+    calls = []
+
+    def fake_pipeline(**kwargs):
+        calls.append(kwargs)
+        return {}
+
+    client, manager = _make_client(fake_pipeline, tmp_path)
+
+    client.post(
+        "/api/jobs",
+        data=_upload_form(subtitle_bold="true"),
+        files=_upload_files(),
+    )
+    manager.process_next()
+
+    assert calls[0]["subtitle_bold"] is True
+
+
+def test_create_job_defaults_subtitle_bold_false(tmp_path):
+    calls = []
+
+    def fake_pipeline(**kwargs):
+        calls.append(kwargs)
+        return {}
+
+    client, manager = _make_client(fake_pipeline, tmp_path)
+    client.post("/api/jobs", data=_upload_form(), files=_upload_files())
+    manager.process_next()
+
+    assert calls[0]["subtitle_bold"] is False
+
+
 def test_create_job_forwards_logo_position(tmp_path):
     calls = []
 

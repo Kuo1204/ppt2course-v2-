@@ -211,6 +211,7 @@ def test_happy_path_returns_export_outputs_result(tmp_path):
                                         logo_path="logo.png", logo_opacity=0.6, bgm_path="bgm.mp3",
                                         subtitle_margin_v=200, logo_position="bottom-right",
                                         subtitle_font_color="#000000", subtitle_outline_color="#FFFFFF",
+                                        subtitle_bold=True,
                                     )
 
     assert result["mp4"] == expected["mp4"]
@@ -227,6 +228,7 @@ def test_happy_path_returns_export_outputs_result(tmp_path):
     assert mock_compose.call_args.kwargs["logo_position"] == "bottom-right"
     assert mock_compose.call_args.kwargs["subtitle_font_color"] == "#000000"
     assert mock_compose.call_args.kwargs["subtitle_outline_color"] == "#FFFFFF"
+    assert mock_compose.call_args.kwargs["subtitle_bold"] is True
     mock_export.assert_called_once()
     assert mock_export.call_args[0][2] == ["講稿一", "講稿二"]
 

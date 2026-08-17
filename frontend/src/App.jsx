@@ -154,6 +154,7 @@ const SUBTITLE_POSITION_DEFAULT = 3;
 // has, so leaving these untouched must render byte-for-byte the same.
 const SUBTITLE_FONT_COLOR_DEFAULT = "#FFFFFF";
 const SUBTITLE_OUTLINE_COLOR_DEFAULT = "#000000";
+const SUBTITLE_BOLD_DEFAULT = false;
 
 // Mirrors avatar.py's AvatarMode/AVATAR_MODES.
 const AVATAR_MODES = [
@@ -268,6 +269,7 @@ function App() {
   const [subtitlePositionPercent, setSubtitlePositionPercent] = useState(SUBTITLE_POSITION_DEFAULT);
   const [subtitleFontColor, setSubtitleFontColor] = useState(SUBTITLE_FONT_COLOR_DEFAULT);
   const [subtitleOutlineColor, setSubtitleOutlineColor] = useState(SUBTITLE_OUTLINE_COLOR_DEFAULT);
+  const [subtitleBold, setSubtitleBold] = useState(SUBTITLE_BOLD_DEFAULT);
   const [logoFile, setLogoFile] = useState(null);
   const [logoOpacity, setLogoOpacity] = useState(LOGO_OPACITY_DEFAULT);
   const [logoPosition, setLogoPosition] = useState(LOGO_POSITION_DEFAULT);
@@ -564,6 +566,7 @@ function App() {
     setSubtitlePositionPercent(SUBTITLE_POSITION_DEFAULT);
     setSubtitleFontColor(SUBTITLE_FONT_COLOR_DEFAULT);
     setSubtitleOutlineColor(SUBTITLE_OUTLINE_COLOR_DEFAULT);
+    setSubtitleBold(SUBTITLE_BOLD_DEFAULT);
     setLogoFile(null);
     setLogoOpacity(LOGO_OPACITY_DEFAULT);
     setLogoPosition(LOGO_POSITION_DEFAULT);
@@ -679,6 +682,7 @@ function App() {
     );
     form.append("subtitle_font_color", subtitleFontColor);
     form.append("subtitle_outline_color", subtitleOutlineColor);
+    if (subtitleBold) form.append("subtitle_bold", "true");
     if (logoFile) {
       form.append("logo", logoFile);
       form.append("logo_opacity", String(logoOpacity / 100));
@@ -851,6 +855,8 @@ function App() {
                 setSubtitleFontColor={setSubtitleFontColor}
                 subtitleOutlineColor={subtitleOutlineColor}
                 setSubtitleOutlineColor={setSubtitleOutlineColor}
+                subtitleBold={subtitleBold}
+                setSubtitleBold={setSubtitleBold}
                 previewImageUrl={thumbUrls[0]}
                 logoFile={logoFile}
                 setLogoFile={setLogoFile}
@@ -926,6 +932,7 @@ function App() {
                   (subtitleFontColor !== SUBTITLE_FONT_COLOR_DEFAULT ||
                     subtitleOutlineColor !== SUBTITLE_OUTLINE_COLOR_DEFAULT) &&
                     `字幕顏色（文字 ${subtitleFontColor.toUpperCase()}・外框 ${subtitleOutlineColor.toUpperCase()}）`,
+                  subtitleBold && "字幕粗體",
                   logoFile &&
                     `Logo（${LOGO_POSITIONS.find((p) => p.value === logoPosition)?.label}角・${
                       LOGO_SIZES.find((s) => s.value === logoSize)?.label
@@ -1559,6 +1566,8 @@ function ExtrasStep({
   setSubtitleFontColor,
   subtitleOutlineColor,
   setSubtitleOutlineColor,
+  subtitleBold,
+  setSubtitleBold,
   previewImageUrl,
   logoFile,
   setLogoFile,
@@ -1641,6 +1650,7 @@ function ExtrasStep({
           fontSize={fontSize}
           fontColor={subtitleFontColor}
           outlineColor={subtitleOutlineColor}
+          bold={subtitleBold}
         />
 
         <SubtitleColorField
@@ -1648,6 +1658,8 @@ function ExtrasStep({
           setFontColor={setSubtitleFontColor}
           outlineColor={subtitleOutlineColor}
           setOutlineColor={setSubtitleOutlineColor}
+          bold={subtitleBold}
+          setBold={setSubtitleBold}
         />
 
         <CollapsibleField
@@ -1959,6 +1971,7 @@ function SubtitlePositionField({
   fontSize,
   fontColor,
   outlineColor,
+  bold,
 }) {
   // True proportional preview: ffmpeg/libass burns FontSize as a literal
   // pixel count against the real output's actual height (see
@@ -2002,6 +2015,7 @@ function SubtitlePositionField({
             bottom: `${percent}%`,
             fontSize: `clamp(8px, ${previewFontSizeCqw}cqw, 72px)`,
             color: fontColor,
+            fontWeight: bold ? 700 : 400,
             textShadow: [
               `-1px -1px 0 ${outlineColor}`,
               `1px -1px 0 ${outlineColor}`,
@@ -2028,14 +2042,23 @@ function SubtitlePositionField({
 // fields there's no "not set" state to represent; leaving both untouched
 // simply resends the same white-text/black-outline defaults the backend
 // already renders today, so this is fully backward compatible either way.
-function SubtitleColorField({ fontColor, setFontColor, outlineColor, setOutlineColor }) {
+function SubtitleColorField({
+  fontColor,
+  setFontColor,
+  outlineColor,
+  setOutlineColor,
+  bold,
+  setBold,
+}) {
   const isDefault =
-    fontColor === SUBTITLE_FONT_COLOR_DEFAULT && outlineColor === SUBTITLE_OUTLINE_COLOR_DEFAULT;
+    fontColor === SUBTITLE_FONT_COLOR_DEFAULT &&
+    outlineColor === SUBTITLE_OUTLINE_COLOR_DEFAULT &&
+    bold === SUBTITLE_BOLD_DEFAULT;
 
   return (
     <div className="field full">
       <label>
-        字幕顏色 <FieldTag required={false} />
+        字幕顏色與粗細 <FieldTag required={false} />
       </label>
       <div className="subtitle-color-field">
         <div className="subtitle-color-swatch">
@@ -2058,6 +2081,14 @@ function SubtitleColorField({ fontColor, setFontColor, outlineColor, setOutlineC
           />
           <span className="hint">{outlineColor.toUpperCase()}</span>
         </div>
+        <label className="pacing-toggle">
+          <input
+            type="checkbox"
+            checked={bold}
+            onChange={(e) => setBold(e.target.checked)}
+          />
+          粗體
+        </label>
         {!isDefault && (
           <button
             type="button"
@@ -2065,14 +2096,15 @@ function SubtitleColorField({ fontColor, setFontColor, outlineColor, setOutlineC
             onClick={() => {
               setFontColor(SUBTITLE_FONT_COLOR_DEFAULT);
               setOutlineColor(SUBTITLE_OUTLINE_COLOR_DEFAULT);
+              setBold(SUBTITLE_BOLD_DEFAULT);
             }}
           >
-            還原預設（白字黑框）
+            還原預設（白字黑框・非粗體）
           </button>
         )}
       </div>
       <p className="hint" style={{ margin: "6px 0 0" }}>
-        上方的字幕預覽會同步套用這裡選的顏色。
+        上方的字幕預覽會同步套用這裡選的顏色與粗細。粗體只有開/關兩種，不是連續的粗細刻度——這是字幕格式（ASS/libass）本身的限制。
       </p>
     </div>
   );
