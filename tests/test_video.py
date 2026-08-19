@@ -1065,6 +1065,84 @@ def test_run_ffmpeg_long_filter_complex_script_file_contains_full_filter():
     assert seen_content["text"] == long_filter
 
 
+# ---- _run_ffmpeg: shortening -i/output paths on very large commands ----
+#
+# Regression coverage for a real user report that persisted even after the
+# -filter_complex_script fix above: a deck with enough slides that the
+# *rest* of the command (mostly repeated "-i <long absolute path>" pairs
+# under this project's own long OneDrive working directory) alone was
+# already big enough to hit Windows' CreateProcess length limit, with no
+# unusually long filter graph involved at all.
+
+def test_run_ffmpeg_short_command_leaves_absolute_paths_and_cwd_untouched(tmp_path):
+    image_path = str(tmp_path / "slide.png")
+    cmd = ["ffmpeg", "-y", "-i", image_path, "-map", "[out]", str(tmp_path / "out.mp4")]
+
+    class FakeResult:
+        returncode = 0
+        stderr = ""
+
+    captured = {}
+
+    def fake_run(actual_cmd, **kwargs):
+        captured["cmd"] = list(actual_cmd)
+        captured["cwd"] = kwargs.get("cwd")
+        return FakeResult()
+
+    with patch("ppt2course.video.subprocess.run", side_effect=fake_run):
+        _run_ffmpeg(cmd, "test step")
+
+    assert captured["cmd"] == cmd
+    assert captured["cwd"] is None
+
+
+def test_run_ffmpeg_long_command_rewrites_paths_relative_to_common_dir(tmp_path):
+    # _shorten_command_paths only does string manipulation (os.path.isabs /
+    # dirname / commonpath / relpath) -- these paths never need to actually
+    # exist on disk, which matters here since Windows itself caps a real
+    # path at ~260 chars and this deliberately fakes a much longer one to
+    # mirror what a long real OneDrive working directory does. The padding
+    # sits in the *shared* ancestor of work/ and out/ (mirroring a real
+    # job_root), not inside a single slide's own directory below it --
+    # otherwise there's nothing common to rewrite away.
+    fake_root = os.path.join(str(tmp_path), "x" * 2000)
+    work_dir = os.path.join(fake_root, "work")
+    out_dir = os.path.join(fake_root, "out")
+
+    cmd = ["ffmpeg", "-y"]
+    for i in range(5):
+        cmd += ["-i", os.path.join(work_dir, f"slide_{i}.png")]
+        cmd += ["-i", os.path.join(work_dir, f"slide_{i}.mp3")]
+    out_path = os.path.join(out_dir, "final.mp4")
+    cmd += ["-map", "[out]", out_path]
+
+    class FakeResult:
+        returncode = 0
+        stderr = ""
+
+    captured = {}
+
+    def fake_run(actual_cmd, **kwargs):
+        captured["cmd"] = list(actual_cmd)
+        captured["cwd"] = kwargs.get("cwd")
+        return FakeResult()
+
+    with patch("ppt2course.video.subprocess.run", side_effect=fake_run):
+        _run_ffmpeg(cmd, "test step")
+
+    assert captured["cwd"] is not None
+    # Every rewritten path must actually be relative now, and resolve back
+    # (relative to the chosen cwd) to the exact same file as before.
+    for i, arg in enumerate(captured["cmd"]):
+        if arg in ("ffmpeg", "-y", "-i", "-map", "[out]"):
+            continue
+        assert not os.path.isabs(arg), f"expected relative path, got {arg!r}"
+    resolved_out = os.path.normpath(os.path.join(captured["cwd"], captured["cmd"][-1]))
+    assert os.path.normpath(resolved_out) == os.path.normpath(out_path)
+    # And the command line itself is now actually short.
+    assert sum(len(a) for a in captured["cmd"]) < 2000
+
+
 def test_compose_video_forwards_custom_dict_path_to_protect_srt_line_breaks(tmp_path):
     # Real jieba, no mocking. No punctuation at all -> the default hard cut
     # at position 18 lands inside this invented term (span 15-20) unless a

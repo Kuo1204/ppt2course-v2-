@@ -695,6 +695,49 @@ def _build_ffmpeg_command(
 # the filter string alone is already large enough to matter.
 _FILTER_COMPLEX_SCRIPT_THRESHOLD = 8000
 
+# Moving the filter graph off the command line (above) isn't always enough
+# on its own: a deck with many slides/overlays repeats a long absolute
+# working-directory prefix across dozens of "-i <path>" pairs (and the final
+# output path), and that alone can still blow the ~32K-character budget even
+# with a short filter graph. Only bother rewriting paths once the whole
+# command is already large enough that this matters -- keeps every normal
+# (small) invocation, including all of this module's tests, byte-for-byte
+# unchanged.
+_COMMAND_LENGTH_REWRITE_THRESHOLD = 20000
+
+
+def _shorten_command_paths(cmd: list[str]) -> tuple[list[str], str | None]:
+    """Rewrite -i/output path arguments to be relative to their common
+    directory, and return that directory to run ffmpeg from as cwd. A
+    no-op (returns cmd, None) unless the command is already long enough
+    that the rewrite is worth doing.
+    """
+    if sum(len(arg) for arg in cmd) < _COMMAND_LENGTH_REWRITE_THRESHOLD:
+        return cmd, None
+
+    # Every builder in this module follows the same shape: each input path
+    # follows an "-i" flag, and the output path is always the trailing
+    # argument.
+    path_indices = [i + 1 for i, arg in enumerate(cmd) if arg == "-i"]
+    if cmd:
+        path_indices.append(len(cmd) - 1)
+
+    abs_paths = [cmd[i] for i in path_indices if os.path.isabs(cmd[i])]
+    if not abs_paths:
+        return cmd, None
+
+    try:
+        common_dir = os.path.commonpath([os.path.dirname(p) for p in abs_paths])
+    except ValueError:
+        # e.g. paths on different drives -- nothing sensible to make relative to
+        return cmd, None
+
+    new_cmd = list(cmd)
+    for i in path_indices:
+        if os.path.isabs(cmd[i]):
+            new_cmd[i] = os.path.relpath(cmd[i], common_dir)
+    return new_cmd, common_dir
+
 
 def _run_ffmpeg(cmd: list[str], step_description: str) -> None:
     cmd = list(cmd)
@@ -709,9 +752,11 @@ def _run_ffmpeg(cmd: list[str], step_description: str) -> None:
             cmd[filter_index] = "-filter_complex_script"
             cmd[filter_index + 1] = script_path
 
+    cmd, cwd = _shorten_command_paths(cmd)
+
     try:
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True)
+            result = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
         except OSError as exc:
             # e.g. the CreateProcess-level WinError 206 above -- this is
             # ffmpeg never actually launching, distinct from ffmpeg launching
