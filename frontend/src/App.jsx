@@ -178,6 +178,7 @@ const AVATAR_SIZES = [
 ];
 
 const GEMINI_API_KEY_URL = "https://aistudio.google.com/app/apikey";
+const PEXELS_API_KEY_URL = "https://www.pexels.com/api/new/";
 const POLL_INTERVAL_MS = 2000;
 
 const DOWNLOAD_LABELS = { mp4: "課程影片", srt: "字幕檔", docx: "講稿" };
@@ -1722,7 +1723,7 @@ function ExtrasStep({
 
         <CollapsibleField
           title="2D 講師 Avatar"
-          defaultOpen={avatarMode !== "none"}
+          defaultOpen
           summary={AVATAR_MODES.find((m) => m.value === avatarMode)?.label}
         >
           <AvatarField
@@ -2354,8 +2355,12 @@ function VisualsStep({
 
         <div className="field full">
           <label htmlFor="pexels-key-input">
-            Pexels API Key <span className="hint">— 選填，沒有的話搜尋素材時只會顯示提示，不影響其他功能</span>
+            Pexels API Key <FieldTag required={false} />
           </label>
+          <p className="hint" style={{ margin: "0 0 8px" }}>
+            AI 建議「這頁適合加圖片/影片」之後，就是用這組 Key 去 Pexels（免費圖庫網站）搜尋素材縮圖給你挑選；
+            不填的話，這個搜尋功能不能用（只會顯示提示訊息），但完全不影響其他功能，也不會讓製作失敗。
+          </p>
           <input
             id="pexels-key-input"
             type="password"
@@ -2363,6 +2368,9 @@ function VisualsStep({
             onChange={(e) => setPexelsApiKey(e.target.value)}
             placeholder="貼上你的 Pexels API Key（可留空）"
           />
+          <a href={PEXELS_API_KEY_URL} target="_blank" rel="noreferrer" className="hint-link">
+            還沒有 Pexels API Key？點此免費申請 →
+          </a>
         </div>
 
         <GenerateScriptButton
