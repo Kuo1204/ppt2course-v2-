@@ -8,6 +8,7 @@ always agree on where each slide actually starts — per-slide TimedChunk lists
 STEP4's generate_cues/cues_to_srt are called with those offsets baked in.
 """
 
+import os
 import re
 import shutil
 import subprocess
@@ -679,12 +680,55 @@ def _build_ffmpeg_command(
     return cmd
 
 
+# On Windows, subprocess has no argv[] like POSIX exec -- CreateProcess only
+# takes a single command-line string, internally capped at roughly 32K
+# characters, and Python's subprocess.run() joins the whole cmd list into
+# one before handing it over. A deck with many slides/overlays already
+# spends a lot of that budget on repeated "-i <long absolute path>" pairs
+# (this project's own working directories run long -- OneDrive + Chinese
+# folder names), so a correspondingly long -filter_complex graph string can
+# push the total past the limit. That surfaces as CreateProcess itself
+# failing with WinError 206 ("the filename or extension is too long") before
+# ffmpeg ever runs -- a real report from a user whose deck had many slides.
+# ffmpeg's own documented workaround is to read the filter graph from a file
+# via -filter_complex_script instead of the command line, so do that once
+# the filter string alone is already large enough to matter.
+_FILTER_COMPLEX_SCRIPT_THRESHOLD = 8000
+
+
 def _run_ffmpeg(cmd: list[str], step_description: str) -> None:
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise VideoComposeError(
-            f"ffmpeg failed during {step_description} (exit {result.returncode}): {result.stderr}"
-        )
+    cmd = list(cmd)
+    script_path = None
+    if "-filter_complex" in cmd:
+        filter_index = cmd.index("-filter_complex")
+        filter_complex = cmd[filter_index + 1]
+        if len(filter_complex) > _FILTER_COMPLEX_SCRIPT_THRESHOLD:
+            fd, script_path = tempfile.mkstemp(prefix="ppt2course_filter_", suffix=".txt")
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(filter_complex)
+            cmd[filter_index] = "-filter_complex_script"
+            cmd[filter_index + 1] = script_path
+
+    try:
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True)
+        except OSError as exc:
+            # e.g. the CreateProcess-level WinError 206 above -- this is
+            # ffmpeg never actually launching, distinct from ffmpeg launching
+            # and then failing (handled below via returncode).
+            raise VideoComposeError(
+                f"failed to launch ffmpeg during {step_description}: {exc}"
+            ) from exc
+        if result.returncode != 0:
+            raise VideoComposeError(
+                f"ffmpeg failed during {step_description} (exit {result.returncode}): {result.stderr}"
+            )
+    finally:
+        if script_path is not None:
+            try:
+                os.remove(script_path)
+            except OSError:
+                pass
 
 
 def _add_logo_overlay(

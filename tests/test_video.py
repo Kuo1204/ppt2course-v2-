@@ -1,3 +1,4 @@
+import os
 from unittest.mock import patch
 
 import pytest
@@ -20,6 +21,7 @@ from ppt2course.video import (
     _effective_transition_ms,
     _hex_to_ass_color,
     _mix_background_music,
+    _run_ffmpeg,
     _scale_pad_filter,
     _total_duration_ms,
     _video_xfade_chain,
@@ -974,6 +976,93 @@ def test_compose_video_raises_on_nonzero_ffmpeg_exit(tmp_path):
                         str(tmp_path / "out.mp4"),
                         str(tmp_path / "out.srt"),
                     )
+
+
+# ---- _run_ffmpeg: Windows command-line length / launch-failure handling ----
+#
+# Regression coverage for a real user report of a stalled render: a large
+# deck's -filter_complex string, combined with a long "-i <path>" per slide
+# (this project's own working directories run long -- OneDrive + Chinese
+# folder names), pushed the whole command line past Windows' CreateProcess
+# limit, which fails with WinError 206 ("the filename or extension is too
+# long") *before* ffmpeg ever runs. That's a raw OSError, not an ffmpeg
+# non-zero exit -- and since the pipeline only ever wrapped VideoComposeError,
+# it escaped all the way out and killed the job worker thread for good (see
+# test_jobs.py's matching regression tests).
+
+def test_run_ffmpeg_wraps_launch_failure_as_video_compose_error():
+    with patch(
+        "ppt2course.video.subprocess.run",
+        side_effect=OSError("[WinError 206] the filename or extension is too long"),
+    ):
+        with pytest.raises(VideoComposeError, match="failed to launch ffmpeg"):
+            _run_ffmpeg(["ffmpeg", "-y", "-i", "a.png"], "test step")
+
+
+def test_run_ffmpeg_short_filter_complex_stays_inline():
+    cmd = ["ffmpeg", "-y", "-filter_complex", "short", "-map", "[out]"]
+
+    class FakeResult:
+        returncode = 0
+        stderr = ""
+
+    with patch("ppt2course.video.subprocess.run", return_value=FakeResult()) as mock_run:
+        _run_ffmpeg(cmd, "test step")
+
+    called_cmd = mock_run.call_args[0][0]
+    assert "-filter_complex" in called_cmd
+    assert "-filter_complex_script" not in called_cmd
+    assert called_cmd[called_cmd.index("-filter_complex") + 1] == "short"
+
+
+def test_run_ffmpeg_long_filter_complex_moves_to_script_file():
+    long_filter = "a" * 20000
+    cmd = ["ffmpeg", "-y", "-filter_complex", long_filter, "-map", "[out]"]
+
+    class FakeResult:
+        returncode = 0
+        stderr = ""
+
+    captured = {}
+
+    def fake_run(actual_cmd, **kwargs):
+        captured["cmd"] = list(actual_cmd)
+        return FakeResult()
+
+    with patch("ppt2course.video.subprocess.run", side_effect=fake_run):
+        _run_ffmpeg(cmd, "test step")
+
+    called_cmd = captured["cmd"]
+    assert "-filter_complex" not in called_cmd
+    assert "-filter_complex_script" in called_cmd
+    script_path = called_cmd[called_cmd.index("-filter_complex_script") + 1]
+    # The command line itself must actually be short now -- the whole point
+    # is to keep the long content out of it.
+    assert len(script_path) < 300
+    # The script file is cleaned up again once ffmpeg has been invoked.
+    assert not os.path.exists(script_path)
+
+
+def test_run_ffmpeg_long_filter_complex_script_file_contains_full_filter():
+    long_filter = "b" * 20000
+    cmd = ["ffmpeg", "-y", "-filter_complex", long_filter, "-map", "[out]"]
+
+    class FakeResult:
+        returncode = 0
+        stderr = ""
+
+    seen_content = {}
+
+    def fake_run(actual_cmd, **kwargs):
+        script_path = actual_cmd[actual_cmd.index("-filter_complex_script") + 1]
+        with open(script_path, encoding="utf-8") as f:
+            seen_content["text"] = f.read()
+        return FakeResult()
+
+    with patch("ppt2course.video.subprocess.run", side_effect=fake_run):
+        _run_ffmpeg(cmd, "test step")
+
+    assert seen_content["text"] == long_filter
 
 
 def test_compose_video_forwards_custom_dict_path_to_protect_srt_line_breaks(tmp_path):

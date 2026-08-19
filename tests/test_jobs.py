@@ -93,6 +93,49 @@ def test_process_next_marks_error_on_pipeline_error():
     assert job.result is None
 
 
+def test_process_next_marks_error_on_unexpected_exception_without_killing_worker():
+    # Regression coverage for a real report: a job whose pipeline_fn raised
+    # something other than PipelineError (e.g. a raw OSError escaping
+    # ffmpeg invocation) used to propagate out of process_next() entirely,
+    # killing the single _worker_loop thread -- every job submitted after
+    # that point then sat in QUEUED forever with no worker left to process
+    # it. process_next() itself must swallow it and mark just that job
+    # ERROR, so the manager (and a real _worker_loop) can keep going.
+    def failing_pipeline(**kwargs):
+        raise FileNotFoundError("[WinError 206] the filename or extension is too long")
+
+    manager = _make_manager(pipeline_fn=failing_pipeline)
+    job_id = manager.submit(work_dir="w", out_dir="o")
+
+    processed = manager.process_next()
+
+    job = manager.get(job_id)
+    assert processed is True
+    assert job.status is JobStatus.ERROR
+    assert "WinError 206" in job.error
+    assert job.result is None
+
+
+def test_process_next_continues_processing_later_jobs_after_unexpected_exception():
+    order = []
+
+    def pipeline(**kwargs):
+        if kwargs["out_dir"] == "first":
+            raise RuntimeError("boom")
+        order.append(kwargs["out_dir"])
+        return {}
+
+    manager = _make_manager(pipeline_fn=pipeline)
+    manager.submit(work_dir="w1", out_dir="first")
+    second_id = manager.submit(work_dir="w2", out_dir="second")
+
+    manager.process_next()
+    manager.process_next()
+
+    assert order == ["second"]
+    assert manager.get(second_id).status is JobStatus.DONE
+
+
 def test_process_next_returns_false_when_queue_empty():
     manager = _make_manager(pipeline_fn=lambda **kwargs: {})
     assert manager.process_next(block=False) is False

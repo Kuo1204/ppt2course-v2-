@@ -107,6 +107,21 @@ class JobManager:
                 job.error = str(exc)
                 job.completed_at = time.time()
             return
+        except Exception as exc:
+            # Anything the pipeline itself doesn't recognize and wrap into a
+            # PipelineError (e.g. a raw OSError escaping ffmpeg invocation)
+            # used to propagate straight out of process_next() and kill the
+            # single _worker_loop thread for good -- every job submitted
+            # after that point then sat in QUEUED forever with no worker
+            # left to pick it up, which is what "生成一個影片也太久" turned
+            # out to be: not a slow render, but a dead worker thread from an
+            # earlier job's unhandled exception. This is the last-resort net
+            # so one bad job can only ever fail itself, never the queue.
+            with self._lock:
+                job.status = JobStatus.ERROR
+                job.error = f"unexpected error: {exc}"
+                job.completed_at = time.time()
+            return
 
         with self._lock:
             job.status = JobStatus.DONE
