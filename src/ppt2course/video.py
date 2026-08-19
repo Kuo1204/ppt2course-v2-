@@ -14,7 +14,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 
 from ppt2course.audio_duration import get_audio_duration_ms
@@ -156,6 +156,12 @@ class AvatarOverlay:
     image_path: str
     start_ms: int
     end_ms: int
+    # True only for a synthetic overlay produced by
+    # _coalesce_avatar_overlays: image_path then points at a pre-rendered
+    # video clip covering [start_ms, end_ms) rather than a still image to
+    # loop for the whole slide. False (the default) for every ordinary
+    # overlay, so existing callers/tests are unaffected.
+    is_prerendered_clip: bool = False
 
     def __post_init__(self) -> None:
         if self.start_ms < 0 or self.end_ms <= self.start_ms:
@@ -422,6 +428,127 @@ def _avatar_scale_and_overlay_filters(
     return parts
 
 
+# A real production job (10 slides, an avatar cycling idle/talk_open/
+# talk_close roughly every 0.2s across slides up to ~103s long) produced
+# over 2,500 avatar overlays -- one ffmpeg input plus two filter lines each
+# -- ballooning a single -filter_complex argument to 137,222 characters and
+# the whole command to 163,130 characters, well past Windows' real
+# CreateProcess limit (~32,767 characters) and impossible to work around
+# with path-shortening (see _shorten_command_paths) since the bulk of the
+# length is filter syntax, not paths. -filter_complex_script (which would
+# move that graph into a file) is confirmed unsupported by this project's
+# actual ffmpeg build. So instead: once a slide has more than this many
+# avatar overlays, _coalesce_avatar_overlays pre-renders its whole
+# idle/talk_open/talk_close sequence into a single small clip (via a
+# concat-demuxer list file, itself outside the command line) *before*
+# _build_ffmpeg_command ever runs -- collapsing however many hundreds of
+# swaps that slide has down to exactly one input and one overlay filter
+# line, regardless of how long its narration is or how fast the avatar
+# cycles. A slide with only a handful of swaps is left alone (not worth an
+# extra ffmpeg process launch to pre-render).
+_AVATAR_OVERLAY_COALESCE_THRESHOLD = 4
+
+
+def _escape_ffmpeg_concat_path(path: str) -> str:
+    # ffmpeg's concat demuxer treats each "file '...'" line as a
+    # single-quoted string; the only character that needs escaping inside
+    # it is a literal single quote, via the standard shell-style close-
+    # quote/escaped-quote/reopen-quote trick.
+    return path.replace("'", "'\\''")
+
+
+def _build_avatar_concat_list(
+    overlays: tuple[AvatarOverlay, ...], transparent_png_path: str, list_path: str
+) -> None:
+    """Write a concat-demuxer list file that reproduces this slide's avatar
+    overlays back-to-back on their own timeline (starting at overlays[0]'s
+    own start_ms, i.e. t=0 in the rendered clip), filling any gap between
+    two overlays with a transparent frame so a period with no avatar
+    showing stays exactly that way once merged."""
+    lines: list[str] = []
+    cursor_ms = overlays[0].start_ms
+    last_file = overlays[0].image_path
+    for overlay in overlays:
+        if overlay.start_ms > cursor_ms:
+            gap_sec = (overlay.start_ms - cursor_ms) / 1000
+            lines.append(f"file '{_escape_ffmpeg_concat_path(transparent_png_path)}'")
+            lines.append(f"duration {gap_sec}")
+            last_file = transparent_png_path
+        dur_sec = (overlay.end_ms - overlay.start_ms) / 1000
+        lines.append(f"file '{_escape_ffmpeg_concat_path(overlay.image_path)}'")
+        lines.append(f"duration {dur_sec}")
+        last_file = overlay.image_path
+        cursor_ms = overlay.end_ms
+    # ffmpeg's concat demuxer only honors a "duration" directive if the same
+    # file is listed once more right after it, without one -- otherwise the
+    # final segment is shown for a single frame instead of its real length.
+    lines.append(f"file '{_escape_ffmpeg_concat_path(last_file)}'")
+    with open(list_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+
+def _render_avatar_overlay_clip(
+    overlays: tuple[AvatarOverlay, ...], work_dir: str, clip_name: str, fps: int
+) -> str:
+    """Pre-render one slide's whole avatar image-swap sequence into a
+    single small clip (alpha-preserving, so it still overlays exactly like
+    the still images it replaces), via ffmpeg's concat demuxer -- the
+    file-swap timeline lives in an external list file, never on the
+    command line, so this scales to however many swaps a slide has without
+    affecting command length at all."""
+    transparent_png_path = os.path.join(work_dir, "_avatar_transparent.png")
+    if not os.path.exists(transparent_png_path):
+        _run_ffmpeg(
+            [
+                "ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=black@0.0:s=16x16",
+                "-frames:v", "1", transparent_png_path,
+            ],
+            "avatar transparent filler frame",
+        )
+
+    list_path = os.path.join(work_dir, f"{clip_name}_list.txt")
+    _build_avatar_concat_list(overlays, transparent_png_path, list_path)
+
+    clip_path = os.path.join(work_dir, f"{clip_name}.mov")
+    _run_ffmpeg(
+        [
+            "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_path,
+            "-vf", f"format=rgba,fps={fps}",
+            "-c:v", "qtrle",
+            clip_path,
+        ],
+        "avatar overlay clip pre-render",
+    )
+    return clip_path
+
+
+def _coalesce_avatar_overlays(
+    slides: list[SlideVideoInput], work_dir: str, fps: int
+) -> list[SlideVideoInput]:
+    """Replace any slide's avatar_overlays with a single pre-rendered-clip
+    overlay once it has more than _AVATAR_OVERLAY_COALESCE_THRESHOLD of
+    them. A no-op (returns slides unchanged) for every slide at or under
+    the threshold, so a typical few-swap avatar deck's command is
+    byte-for-byte the same as before this existed.
+    """
+    result: list[SlideVideoInput] = []
+    for i, slide in enumerate(slides):
+        if len(slide.avatar_overlays) <= _AVATAR_OVERLAY_COALESCE_THRESHOLD:
+            result.append(slide)
+            continue
+        clip_path = _render_avatar_overlay_clip(
+            slide.avatar_overlays, work_dir, f"avatar_clip_{i}", fps
+        )
+        merged = AvatarOverlay(
+            image_path=clip_path,
+            start_ms=slide.avatar_overlays[0].start_ms,
+            end_ms=slide.avatar_overlays[-1].end_ms,
+            is_prerendered_clip=True,
+        )
+        result.append(replace(slide, avatar_overlays=(merged,)))
+    return result
+
+
 def _audio_label_filter(
     input_index: int, slide_index: int, visual_duration_ms: int | None = None
 ) -> str:
@@ -613,7 +740,15 @@ def _build_ffmpeg_command(
 
         if has_avatar:
             for overlay in slide.avatar_overlays:
-                cmd += ["-loop", "1", "-t", str(durations_ms[i] / 1000), "-i", overlay.image_path]
+                if overlay.is_prerendered_clip:
+                    # A single clip already covering [start_ms, end_ms) of
+                    # its own timeline -- itsoffset shifts its frames to
+                    # start appearing at the right point on the slide's
+                    # timeline instead of looping a still image for the
+                    # slide's whole duration.
+                    cmd += ["-itsoffset", str(overlay.start_ms / 1000), "-i", overlay.image_path]
+                else:
+                    cmd += ["-loop", "1", "-t", str(durations_ms[i] / 1000), "-i", overlay.image_path]
             scale_filters.extend(
                 _avatar_scale_and_overlay_filters(
                     i,
@@ -1075,7 +1210,17 @@ def compose_video(
     needs_post_processing = bool(logo_path or bgm_path or intro_path or outro_path)
     temp_dir = tempfile.mkdtemp(prefix="ppt2course_video_") if needs_post_processing else None
 
+    needs_avatar_coalescing = any(
+        len(slide.avatar_overlays) > _AVATAR_OVERLAY_COALESCE_THRESHOLD for slide in slides
+    )
+    avatar_temp_dir = (
+        tempfile.mkdtemp(prefix="ppt2course_avatar_") if needs_avatar_coalescing else None
+    )
+
     try:
+        if avatar_temp_dir:
+            slides = _coalesce_avatar_overlays(slides, avatar_temp_dir, fps)
+
         core_output = f"{temp_dir}/01_core.mp4" if needs_post_processing else out_video_path
 
         cmd = _build_ffmpeg_command(
@@ -1130,3 +1275,5 @@ def compose_video(
     finally:
         if temp_dir:
             shutil.rmtree(temp_dir, ignore_errors=True)
+        if avatar_temp_dir:
+            shutil.rmtree(avatar_temp_dir, ignore_errors=True)

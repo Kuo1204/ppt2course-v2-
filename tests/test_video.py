@@ -10,18 +10,22 @@ from ppt2course.video import (
     BrollOverlay,
     SlideVideoInput,
     VideoComposeError,
+    _AVATAR_OVERLAY_COALESCE_THRESHOLD,
     _LAUNCH_RETRY_ATTEMPTS,
     _add_logo_overlay,
     _audio_acrossfade_chain,
     _audio_concat_chain,
     _audio_label_filter,
+    _build_avatar_concat_list,
     _build_cues,
     _build_ffmpeg_command,
+    _coalesce_avatar_overlays,
     _compute_slide_offsets,
     _concatenate_with_intro_outro,
     _effective_transition_ms,
     _hex_to_ass_color,
     _mix_background_music,
+    _render_avatar_overlay_clip,
     _run_ffmpeg,
     _scale_pad_filter,
     _total_duration_ms,
@@ -701,6 +705,179 @@ def test_build_ffmpeg_command_without_avatar_is_unchanged():
     )
     filter_complex = cmd[cmd.index("-filter_complex") + 1]
     assert "avatar" not in filter_complex
+
+
+def test_build_ffmpeg_command_with_prerendered_avatar_clip_uses_itsoffset_not_loop():
+    slide = SlideVideoInput(
+        image_path="s1.png",
+        audio_path="a1.mp3",
+        chunks=[TimedChunk("你好", 0, 800)],
+        avatar_overlays=(
+            AvatarOverlay(
+                image_path="clip.mov", start_ms=250, end_ms=900, is_prerendered_clip=True
+            ),
+        ),
+    )
+    cmd = _build_ffmpeg_command(
+        [slide],
+        durations_ms=[1000],
+        offsets_ms=[0],
+        srt_path="out.srt",
+        out_video_path="out.mp4",
+        transition="fade",
+        transition_duration_ms=500,
+        resolution=(1920, 1080),
+        fps=30,
+        font_size=64,
+    )
+    clip_index = cmd.index("clip.mov")
+    assert cmd[clip_index - 3 : clip_index - 1] == ["-itsoffset", "0.25"]
+    assert "-loop" not in cmd[max(0, clip_index - 6) : clip_index]
+    filter_complex = cmd[cmd.index("-filter_complex") + 1]
+    assert "enable='between(t,0.25,0.9)'" in filter_complex
+
+
+# ---- avatar overlay coalescing (WinError 206 / command-length fix) ----
+
+
+def _avatar_swap_sequence(n: int, step_ms: int = 200) -> tuple[AvatarOverlay, ...]:
+    images = ["idle.png", "talk_open.png", "talk_close.png"]
+    overlays = []
+    for i in range(n):
+        overlays.append(
+            AvatarOverlay(
+                image_path=images[i % len(images)],
+                start_ms=i * step_ms,
+                end_ms=(i + 1) * step_ms,
+            )
+        )
+    return tuple(overlays)
+
+
+def test_build_avatar_concat_list_fills_gaps_with_transparent_frame(tmp_path):
+    overlays = (
+        AvatarOverlay(image_path="idle.png", start_ms=100, end_ms=300),
+        AvatarOverlay(image_path="talk_open.png", start_ms=500, end_ms=700),
+    )
+    list_path = str(tmp_path / "list.txt")
+    _build_avatar_concat_list(overlays, "transparent.png", list_path)
+    content = open(list_path, encoding="utf-8").read()
+    lines = content.strip().splitlines()
+    assert lines == [
+        "file 'idle.png'",
+        "duration 0.2",
+        "file 'transparent.png'",
+        "duration 0.2",
+        "file 'talk_open.png'",
+        "duration 0.2",
+        "file 'talk_open.png'",
+    ]
+
+
+def test_build_avatar_concat_list_escapes_single_quotes():
+    overlays = (AvatarOverlay(image_path="it's.png", start_ms=0, end_ms=100),)
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        list_path = os.path.join(d, "list.txt")
+        _build_avatar_concat_list(overlays, "transparent.png", list_path)
+        content = open(list_path, encoding="utf-8").read()
+        assert "it'\\''s.png" in content
+
+
+def test_coalesce_avatar_overlays_leaves_slides_at_or_under_threshold_untouched(tmp_path):
+    slide = SlideVideoInput(
+        image_path="s1.png",
+        audio_path="a1.mp3",
+        chunks=[],
+        avatar_overlays=_avatar_swap_sequence(_AVATAR_OVERLAY_COALESCE_THRESHOLD),
+    )
+    with patch("ppt2course.video._run_ffmpeg") as mock_run:
+        result = _coalesce_avatar_overlays([slide], str(tmp_path), fps=30)
+    mock_run.assert_not_called()
+    assert result == [slide]
+
+
+def test_coalesce_avatar_overlays_merges_slides_over_threshold_into_one_clip(tmp_path):
+    n = _AVATAR_OVERLAY_COALESCE_THRESHOLD + 20
+    overlays = _avatar_swap_sequence(n)
+    slide = SlideVideoInput(
+        image_path="s1.png",
+        audio_path="a1.mp3",
+        chunks=[],
+        avatar_overlays=overlays,
+    )
+    with patch("ppt2course.video._run_ffmpeg") as mock_run:
+        result = _coalesce_avatar_overlays([slide], str(tmp_path), fps=30)
+
+    assert len(result) == 1
+    merged_overlays = result[0].avatar_overlays
+    assert len(merged_overlays) == 1
+    merged = merged_overlays[0]
+    assert merged.is_prerendered_clip is True
+    assert merged.start_ms == overlays[0].start_ms
+    assert merged.end_ms == overlays[-1].end_ms
+    assert merged.image_path.endswith(".mov")
+    # transparent filler frame + concat render == 2 ffmpeg launches, however
+    # many hundreds of swap events this slide actually has.
+    assert mock_run.call_count == 2
+    # Other slide fields must survive untouched.
+    assert result[0].image_path == slide.image_path
+    assert result[0].audio_path == slide.audio_path
+
+
+def test_render_avatar_overlay_clip_reuses_existing_transparent_frame(tmp_path):
+    overlays = _avatar_swap_sequence(_AVATAR_OVERLAY_COALESCE_THRESHOLD + 5)
+
+    def fake_run_ffmpeg(cmd, step_description):
+        # The real ffmpeg call would create whatever output path is last on
+        # the command line; fake that so the "already exists" reuse check
+        # has something real to find on the second call.
+        open(cmd[-1], "wb").close()
+
+    with patch("ppt2course.video._run_ffmpeg", side_effect=fake_run_ffmpeg) as mock_run:
+        _render_avatar_overlay_clip(overlays, str(tmp_path), "clip0", fps=30)
+        assert mock_run.call_count == 2  # transparent frame + concat render
+        mock_run.reset_mock()
+        _render_avatar_overlay_clip(overlays, str(tmp_path), "clip1", fps=30)
+        assert mock_run.call_count == 1  # transparent frame already on disk
+
+
+def test_compose_video_with_many_avatar_swaps_keeps_command_short(tmp_path):
+    # Reproduces the real production failure: a slide with hundreds of
+    # avatar image swaps used to blow -filter_complex/the whole command
+    # past Windows' command-line limit. After coalescing, the command
+    # length must stay flat regardless of how many swaps there are.
+    chunks = [TimedChunk("你好", 0, 800)]
+    overlays = _avatar_swap_sequence(300)
+    slide = SlideVideoInput(
+        image_path=str(tmp_path / "s1.png"),
+        audio_path=str(tmp_path / "a1.mp3"),
+        chunks=chunks,
+        avatar_overlays=overlays,
+    )
+
+    captured_cmds = []
+
+    class FakeResult:
+        returncode = 0
+        stderr = ""
+
+    def fake_run(*args, **kwargs):
+        cmd = args[0] if args else kwargs.get("cmd")
+        captured_cmds.append(list(cmd))
+        return FakeResult()
+
+    with patch("ppt2course.video.shutil.which", return_value="/usr/bin/ffmpeg"), \
+        patch("ppt2course.video.get_audio_duration_ms", return_value=60000), \
+        patch("ppt2course.video.subprocess.run", side_effect=fake_run):
+        compose_video([slide], str(tmp_path / "out.mp4"), str(tmp_path / "out.srt"))
+
+    main_cmd = captured_cmds[-1]
+    total_length = sum(len(a) for a in main_cmd)
+    assert total_length < 5000
+    filter_complex = main_cmd[main_cmd.index("-filter_complex") + 1]
+    assert filter_complex.count("overlay=") <= 2  # exactly the avatar overlay, once
 
 
 def test_compose_video_rejects_avatar_overlay_past_slides_own_audio_duration(tmp_path):
