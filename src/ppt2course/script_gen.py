@@ -90,6 +90,30 @@ def _extract_retry_delay(error_str: str, default_seconds: int = 20) -> int:
     return default_seconds
 
 
+def _is_rate_limit_error(error_str: str) -> bool:
+    return "RESOURCE_EXHAUSTED" in error_str or "429" in error_str
+
+
+# Google's own docs describe these as transient server-side conditions
+# ("usually temporary... please try again later" is the literal 503
+# message) — worth an automatic retry, unlike e.g. PERMISSION_DENIED or
+# INVALID_ARGUMENT, which won't fix themselves no matter how many times
+# you ask.
+_TRANSIENT_SERVER_ERROR_MARKERS = ("UNAVAILABLE", "INTERNAL", "DEADLINE_EXCEEDED")
+
+
+def _is_transient_server_error(error_str: str) -> bool:
+    return any(marker in error_str for marker in _TRANSIENT_SERVER_ERROR_MARKERS)
+
+
+def _transient_backoff_seconds(attempt: int) -> int:
+    # Unlike a 429's quota response, these carry no retryDelay hint to
+    # parse -- a capped exponential backoff (5s, 10s, 20s, 30s, 30s...)
+    # gives a transient outage a real chance to clear without hammering
+    # an already-overloaded model.
+    return min(5 * (2 ** (attempt - 1)), 30)
+
+
 def _call_gemini(
     prompt: str,
     api_key: str,
@@ -106,10 +130,13 @@ def _call_gemini(
         except Exception as exc:
             last_error = exc
             error_str = str(exc)
-            is_rate_limit = "RESOURCE_EXHAUSTED" in error_str or "429" in error_str
-            if is_rate_limit and attempt < max_retries:
-                time.sleep(_extract_retry_delay(error_str))
-                continue
+            if attempt < max_retries:
+                if _is_rate_limit_error(error_str):
+                    time.sleep(_extract_retry_delay(error_str))
+                    continue
+                if _is_transient_server_error(error_str):
+                    time.sleep(_transient_backoff_seconds(attempt))
+                    continue
             raise ScriptGenerationError(f"Gemini API call failed: {exc}") from exc
 
     raise ScriptGenerationError(f"Gemini API call failed: {last_error}") from last_error

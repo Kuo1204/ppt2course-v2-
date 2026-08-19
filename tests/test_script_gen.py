@@ -195,3 +195,57 @@ def test_non_rate_limit_error_raises_immediately_without_retry():
             with pytest.raises(ScriptGenerationError):
                 generate_script(ScriptMode.AUTO, slides, api_key="fake-key")
     mock_sleep.assert_not_called()
+
+
+# ---- retry-on-transient-server-error behavior (503 UNAVAILABLE etc.) ----
+#
+# Regression coverage for a real user report: "script generation failed:
+# Gemini API call failed: 503 UNAVAILABLE ... This model is currently
+# experiencing high demand ... Please try again later." — that message is
+# Google's own description of a transient condition, but the old retry
+# logic only ever recognized 429/RESOURCE_EXHAUSTED and raised immediately
+# on everything else, including this one.
+
+def test_retries_on_503_unavailable_then_succeeds():
+    slides = [slide(1)]
+    overloaded_error = Exception(
+        "503 UNAVAILABLE. {'error': {'code': 503, 'message': 'This model is "
+        "currently experiencing high demand. Spikes in demand are usually "
+        "temporary. Please try again later.', 'status': 'UNAVAILABLE'}}"
+    )
+    with _patch_genai([overloaded_error, "終於成功了"]):
+        with patch("ppt2course.script_gen.time.sleep") as mock_sleep:
+            result = generate_script(ScriptMode.AUTO, slides, api_key="fake-key")
+    assert result == ["終於成功了"]
+    mock_sleep.assert_called_once()
+
+
+def test_retries_on_internal_and_deadline_exceeded_errors():
+    slides = [slide(1)]
+    internal_error = Exception("500 INTERNAL")
+    deadline_error = Exception("504 DEADLINE_EXCEEDED")
+    with _patch_genai([internal_error, deadline_error, "成功"]):
+        with patch("ppt2course.script_gen.time.sleep"):
+            result = generate_script(ScriptMode.AUTO, slides, api_key="fake-key")
+    assert result == ["成功"]
+
+
+def test_raises_after_exhausting_retries_on_persistent_503():
+    slides = [slide(1)]
+    overloaded_error = Exception("503 UNAVAILABLE")
+    with _patch_genai([overloaded_error] * 5):
+        with patch("ppt2course.script_gen.time.sleep"):
+            with pytest.raises(ScriptGenerationError, match="503 UNAVAILABLE"):
+                generate_script(ScriptMode.AUTO, slides, api_key="fake-key")
+
+
+def test_503_retry_uses_capped_exponential_backoff_not_retry_delay_parsing():
+    # No retryDelay field in a 503 response (unlike 429's quota metadata) --
+    # the backoff schedule is a fixed capped exponential, not parsed from
+    # the error text.
+    slides = [slide(1)]
+    overloaded_error = Exception("503 UNAVAILABLE")
+    with _patch_genai([overloaded_error, overloaded_error, overloaded_error, "成功"]):
+        with patch("ppt2course.script_gen.time.sleep") as mock_sleep:
+            generate_script(ScriptMode.AUTO, slides, api_key="fake-key")
+    assert [c.args[0] for c in mock_sleep.call_args_list] == [5, 10, 20]
