@@ -13,7 +13,9 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from ppt2course.audio_duration import get_audio_duration_ms
 from ppt2course.subtitle import MIN_GAP_MS, SubtitleCue, TimedChunk, cues_to_srt, generate_cues
@@ -757,6 +759,49 @@ def _shorten_command_paths(cmd: list[str]) -> tuple[list[str], str | None]:
     return new_cmd, common_dir
 
 
+# Three attempted fixes in a row (command-length handling, close_fds/retry,
+# resolving past the winget shim) have each addressed a real cause of
+# WinError 206 without stopping every reported recurrence -- meaning
+# whatever's actually happening in the live server process hasn't been
+# directly observed yet, only guessed at from outside. Rather than guess a
+# fourth time, log everything needed to diagnose it for real the next time
+# it happens: every argument's own length (a single pathologically long
+# argument, as opposed to the total, hasn't been ruled out), the resolved
+# executable, cwd, thread name (this always runs on the job worker's
+# dedicated background thread, never the main thread), and the raw OSError's
+# winerror/strerror/filename attributes (str(exc) alone -- all that's been
+# visible in every report so far -- drops those).
+_FFMPEG_LAUNCH_FAILURE_LOG = os.path.join(
+    tempfile.gettempdir(), "ppt2course_ffmpeg_launch_failures.log"
+)
+
+
+def _log_ffmpeg_launch_failure(
+    cmd: list[str], cwd: str | None, exc: OSError, attempt: int
+) -> None:
+    try:
+        with open(_FFMPEG_LAUNCH_FAILURE_LOG, "a", encoding="utf-8") as f:
+            f.write(f"\n=== {datetime.now(timezone.utc).isoformat()} attempt {attempt} ===\n")
+            f.write(f"thread: {threading.current_thread().name}\n")
+            f.write(f"cwd: {cwd!r}\n")
+            f.write(f"cmd[0] (resolved executable): {cmd[0]!r}\n")
+            f.write(f"num args: {len(cmd)}, total length: {sum(len(a) for a in cmd)}\n")
+            f.write("per-arg lengths:\n")
+            for i, arg in enumerate(cmd):
+                f.write(f"  [{i}] len={len(arg)} {arg!r}\n")
+            f.write(
+                f"exc repr: {exc!r}\n"
+                f"exc.winerror: {getattr(exc, 'winerror', None)!r}\n"
+                f"exc.strerror: {getattr(exc, 'strerror', None)!r}\n"
+                f"exc.filename: {getattr(exc, 'filename', None)!r}\n"
+                f"exc.filename2: {getattr(exc, 'filename2', None)!r}\n"
+                f"PATH length: {len(os.environ.get('PATH', ''))}\n"
+            )
+    except OSError:
+        # Never let diagnostic logging itself be the reason a render fails.
+        pass
+
+
 def _run_ffmpeg(cmd: list[str], step_description: str) -> None:
     cmd = list(cmd)
     # Every builder in this module emits the bare string "ffmpeg" as cmd[0]
@@ -803,6 +848,7 @@ def _run_ffmpeg(cmd: list[str], step_description: str) -> None:
             # couple of times since this specific error has been seen to be
             # an intermittent environmental hiccup rather than deterministic.
             last_launch_error = exc
+            _log_ffmpeg_launch_failure(cmd, cwd, exc, attempt)
     else:
         raise VideoComposeError(
             f"failed to launch ffmpeg during {step_description}: {last_launch_error}"

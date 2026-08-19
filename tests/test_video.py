@@ -1000,6 +1000,49 @@ def test_run_ffmpeg_wraps_launch_failure_as_video_compose_error():
             _run_ffmpeg(["ffmpeg", "-y", "-i", "a.png"], "test step")
 
 
+# Three attempted fixes in a row have each addressed a real cause of this
+# error without stopping every reported recurrence, meaning what's actually
+# happening in the live server hasn't been directly observed yet -- only
+# guessed at from outside. This logs full forensic detail (every argument's
+# own length, the resolved executable, cwd, thread name, and the raw
+# OSError's winerror/strerror/filename attributes that plain str(exc) drops)
+# to a fixed temp-dir log file on every launch failure, so the next
+# recurrence can be diagnosed from real data instead of another guess.
+
+def test_run_ffmpeg_logs_forensic_detail_on_launch_failure(tmp_path):
+    log_path = tmp_path / "ffmpeg_launch_failures.log"
+    err = OSError("[WinError 206] the filename or extension is too long")
+    err.winerror = 206
+    err.strerror = "the filename or extension is too long"
+
+    with patch("ppt2course.video._FFMPEG_LAUNCH_FAILURE_LOG", str(log_path)):
+        with patch("ppt2course.video.subprocess.run", side_effect=err):
+            with pytest.raises(VideoComposeError):
+                _run_ffmpeg(["ffmpeg", "-y", "-i", "a.png", "out.mp4"], "test step")
+
+    text = log_path.read_text(encoding="utf-8")
+    assert "winerror: 206" in text
+    assert "a.png" in text
+    assert "thread" in text
+    # Logged once per retry attempt (each entry has two "===" markers).
+    assert text.count("attempt") == _LAUNCH_RETRY_ATTEMPTS
+
+
+def test_run_ffmpeg_launch_failure_logging_never_masks_the_real_error(tmp_path):
+    # If the log file itself can't be written (e.g. an unwritable temp dir),
+    # that must never become the reported failure in place of the real
+    # ffmpeg launch error.
+    unwritable_dir = tmp_path / "does-not-exist" / "also-missing"
+
+    with patch("ppt2course.video._FFMPEG_LAUNCH_FAILURE_LOG", str(unwritable_dir / "log.txt")):
+        with patch(
+            "ppt2course.video.subprocess.run",
+            side_effect=OSError("[WinError 206] the filename or extension is too long"),
+        ):
+            with pytest.raises(VideoComposeError, match="failed to launch ffmpeg"):
+                _run_ffmpeg(["ffmpeg", "-y", "-i", "a.png", "out.mp4"], "test step")
+
+
 # A real recurrence of this exact error happened on a small (10-slide) job
 # whose actual command was only ~5,400 characters -- confirmed nowhere near
 # any command-length limit when reproduced directly. That means command
