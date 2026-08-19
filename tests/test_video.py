@@ -10,6 +10,7 @@ from ppt2course.video import (
     BrollOverlay,
     SlideVideoInput,
     VideoComposeError,
+    _LAUNCH_RETRY_ATTEMPTS,
     _add_logo_overlay,
     _audio_acrossfade_chain,
     _audio_concat_chain,
@@ -997,6 +998,52 @@ def test_run_ffmpeg_wraps_launch_failure_as_video_compose_error():
     ):
         with pytest.raises(VideoComposeError, match="failed to launch ffmpeg"):
             _run_ffmpeg(["ffmpeg", "-y", "-i", "a.png"], "test step")
+
+
+# A real recurrence of this exact error happened on a small (10-slide) job
+# whose actual command was only ~5,400 characters -- confirmed nowhere near
+# any command-length limit when reproduced directly. That means command
+# length isn't the only cause here: a long-running process that keeps
+# launching subprocesses (this job worker, once per ffmpeg step across every
+# job the server has processed) can hit this same misleading error for
+# unrelated Windows/Python reasons. close_fds=False avoids the specific
+# code path involved, and a retry gives an intermittent hiccup a second
+# chance to succeed.
+
+def test_run_ffmpeg_passes_close_fds_false_to_avoid_windows_handle_list_bug():
+    class FakeResult:
+        returncode = 0
+        stderr = ""
+
+    with patch("ppt2course.video.subprocess.run", return_value=FakeResult()) as mock_run:
+        _run_ffmpeg(["ffmpeg", "-y", "-i", "a.png", "out.mp4"], "test step")
+
+    assert mock_run.call_args.kwargs["close_fds"] is False
+
+
+def test_run_ffmpeg_retries_launch_failure_once_then_succeeds():
+    class FakeResult:
+        returncode = 0
+        stderr = ""
+
+    with patch(
+        "ppt2course.video.subprocess.run",
+        side_effect=[OSError("[WinError 206] the filename or extension is too long"), FakeResult()],
+    ) as mock_run:
+        _run_ffmpeg(["ffmpeg", "-y", "-i", "a.png", "out.mp4"], "test step")
+
+    assert mock_run.call_count == 2
+
+
+def test_run_ffmpeg_raises_after_exhausting_launch_retries():
+    with patch(
+        "ppt2course.video.subprocess.run",
+        side_effect=OSError("[WinError 206] the filename or extension is too long"),
+    ) as mock_run:
+        with pytest.raises(VideoComposeError, match="failed to launch ffmpeg"):
+            _run_ffmpeg(["ffmpeg", "-y", "-i", "a.png", "out.mp4"], "test step")
+
+    assert mock_run.call_count == _LAUNCH_RETRY_ATTEMPTS
 
 
 def test_run_ffmpeg_short_filter_complex_stays_inline():

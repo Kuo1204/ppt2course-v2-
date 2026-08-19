@@ -688,17 +688,40 @@ def _build_ffmpeg_command(
 # (this project's own working directories run long -- OneDrive + Chinese
 # folder names). That surfaces as CreateProcess itself failing with
 # WinError 206 ("the filename or extension is too long") before ffmpeg
-# ever runs -- a real report from a user whose deck had many slides.
+# ever runs. Shortening the -i/output path arguments below is a plain
+# string-length optimization ffmpeg itself has no opinion on, so it works
+# regardless of ffmpeg build/version -- unlike -filter_complex_script, which
+# a real user's ffmpeg build (a current gyan.dev Windows build) turned out to
+# reject outright, so that approach isn't used here.
 #
-# ffmpeg has historically documented -filter_complex_script as a way to move
-# the filter graph itself off the command line, but it is NOT used here: a
-# real user's ffmpeg build (a current gyan.dev Windows build) rejects it
-# outright ("Unrecognized option 'filter_complex_script'"), which would turn
-# every render whose filter graph crosses a length threshold into a hard
-# failure -- worse than the bug it was meant to fix. Shortening the -i/output
-# path arguments below is a plain string-length optimization ffmpeg itself
-# has no opinion on, so it works regardless of ffmpeg build/version.
+# IMPORTANT: a real reported recurrence of this same error turned out to
+# have a total command length of only ~5,400 characters -- nowhere near this
+# threshold, and nowhere near Windows' real limit either. So command length
+# is not the only cause of WinError 206 here: there is also a known
+# Windows/Python behavior where a long-running process that repeatedly calls
+# CreateProcess (as this job worker does, once per ffmpeg step, for as many
+# jobs as the server has processed since it started) can eventually hit the
+# same error for reasons unrelated to any single command's length -- see the
+# close_fds=False and retry handling in _run_ffmpeg below, which cover that
+# case. This threshold-gated path-shortening is kept because it's still a
+# real, if less common, way to hit the same error on a very large deck.
 _COMMAND_LENGTH_REWRITE_THRESHOLD = 20000
+
+# A real recurrence of WinError 206 happened on a small (10-slide) job whose
+# actual command was only ~5,400 characters -- far too short to be a command-
+# line-length issue. This matches a separate, known Windows/Python behavior:
+# subprocess.run's default close_fds=True makes CreateProcess build an
+# explicit inheritable-handle list every call, and in a long-running process
+# that keeps launching subprocesses (exactly what this job worker does, once
+# per ffmpeg step across every job the server processes over its lifetime),
+# that bookkeeping has been reported to eventually fail with this exact
+# misleading error, unrelated to command length. close_fds=False skips that
+# code path entirely (this only affects which OS handles the child *could*
+# inherit, not which files ffmpeg is told to read/write -- ffmpeg is only
+# ever given the paths explicitly listed in cmd regardless). Paired with one
+# retry, since if this is an intermittent environmental hiccup rather than a
+# deterministic one, a second attempt is likely to succeed.
+_LAUNCH_RETRY_ATTEMPTS = 2
 
 
 def _shorten_command_paths(cmd: list[str]) -> tuple[list[str], str | None]:
@@ -737,15 +760,25 @@ def _shorten_command_paths(cmd: list[str]) -> tuple[list[str], str | None]:
 def _run_ffmpeg(cmd: list[str], step_description: str) -> None:
     cmd, cwd = _shorten_command_paths(list(cmd))
 
-    try:
-        result = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
-    except OSError as exc:
-        # e.g. the CreateProcess-level WinError 206 above -- this is ffmpeg
-        # never actually launching, distinct from ffmpeg launching and then
-        # failing (handled below via returncode).
+    last_launch_error: OSError | None = None
+    for attempt in range(1, _LAUNCH_RETRY_ATTEMPTS + 1):
+        try:
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, cwd=cwd, close_fds=False
+            )
+            break
+        except OSError as exc:
+            # e.g. the CreateProcess-level WinError 206 above -- this is
+            # ffmpeg never actually launching, distinct from ffmpeg launching
+            # and then failing (handled below via returncode). Retried a
+            # couple of times since this specific error has been seen to be
+            # an intermittent environmental hiccup rather than deterministic.
+            last_launch_error = exc
+    else:
         raise VideoComposeError(
-            f"failed to launch ffmpeg during {step_description}: {exc}"
-        ) from exc
+            f"failed to launch ffmpeg during {step_description}: {last_launch_error}"
+        ) from last_launch_error
+
     if result.returncode != 0:
         raise VideoComposeError(
             f"ffmpeg failed during {step_description} (exit {result.returncode}): {result.stderr}"
