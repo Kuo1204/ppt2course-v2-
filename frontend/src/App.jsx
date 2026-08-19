@@ -2358,8 +2358,7 @@ function VisualsStep({
             Pexels API Key <FieldTag required={false} />
           </label>
           <p className="hint" style={{ margin: "0 0 8px" }}>
-            AI 建議「這頁適合加圖片/影片」之後，就是用這組 Key 去 Pexels（免費圖庫網站）搜尋素材縮圖給你挑選；
-            不填的話，這個搜尋功能不能用（只會顯示提示訊息），但完全不影響其他功能，也不會讓製作失敗。
+            用來搜尋 Pexels 免費圖庫的素材縮圖。不填也沒關係，只是不能搜圖，不影響其他功能。
           </p>
           <input
             id="pexels-key-input"
