@@ -178,7 +178,7 @@ const AVATAR_SIZES = [
 ];
 
 const GEMINI_API_KEY_URL = "https://aistudio.google.com/app/apikey";
-const PEXELS_API_KEY_URL = "https://www.pexels.com/api/new/";
+const PEXELS_API_KEY_URL = "https://www.pexels.com/api/";
 const POLL_INTERVAL_MS = 2000;
 
 const DOWNLOAD_LABELS = { mp4: "課程影片", srt: "字幕檔", docx: "講稿" };
