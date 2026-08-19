@@ -17,8 +17,8 @@ import { parseNumberedScript } from "./scriptParser";
 import { resolveDownloadUrl } from "./urlUtils";
 
 const SCRIPT_MODES = [
-  { value: "NOTES", label: "使用投影片備忘稿", needsTexts: false, needsApiKey: false },
   { value: "OWN", label: "我自己輸入逐頁講稿", needsTexts: true, needsApiKey: false },
+  { value: "NOTES", label: "使用投影片備忘稿", needsTexts: false, needsApiKey: false },
   { value: "AUTO", label: "AI 自動生成講稿", needsTexts: false, needsApiKey: true },
   { value: "POLISH", label: "AI 潤飾我輸入的講稿", needsTexts: true, needsApiKey: true },
 ];
