@@ -1046,6 +1046,55 @@ def test_run_ffmpeg_raises_after_exhausting_launch_retries():
     assert mock_run.call_count == _LAUNCH_RETRY_ATTEMPTS
 
 
+# A further real recurrence of WinError 206 happened on the very first job
+# of a freshly restarted server, with a short command using real files that
+# reproduced fine when run standalone outside the server -- ruling out both
+# command length and long-running-process handle accumulation. The one
+# concrete difference found: shutil.which("ffmpeg") resolves (at least on a
+# winget-installed ffmpeg) to a reparse-point shim, not the real binary,
+# which itself re-launches the real ffmpeg.exe as a further subprocess --
+# one extra process-spawn hop that could itself be a source of OS-level
+# launch quirks depending on context. _run_ffmpeg now resolves past that
+# shim via realpath() so the real binary is launched directly.
+
+def test_run_ffmpeg_resolves_ffmpeg_to_its_real_path_when_which_finds_a_symlink(tmp_path):
+    real_ffmpeg = tmp_path / "real_ffmpeg.exe"
+    real_ffmpeg.write_bytes(b"")
+    shim = tmp_path / "shim_ffmpeg.exe"
+    try:
+        shim.symlink_to(real_ffmpeg)
+    except OSError:
+        pytest.skip("creating symlinks isn't permitted in this environment")
+
+    class FakeResult:
+        returncode = 0
+        stderr = ""
+
+    with patch("ppt2course.video.shutil.which", return_value=str(shim)):
+        with patch("ppt2course.video.subprocess.run", return_value=FakeResult()) as mock_run:
+            _run_ffmpeg(["ffmpeg", "-y", "-i", "a.png", "out.mp4"], "test step")
+
+    called_cmd = mock_run.call_args[0][0]
+    assert called_cmd[0] == str(real_ffmpeg)
+
+
+def test_run_ffmpeg_leaves_ffmpeg_bare_when_which_finds_nothing_real():
+    # Every other test in this module patches shutil.which to a fake path
+    # that doesn't exist on disk (e.g. "/usr/bin/ffmpeg") -- this asserts
+    # that pattern is deliberately safe: a resolved path that isn't real is
+    # never substituted in, so cmd[0] stays the literal "ffmpeg" fallback.
+    class FakeResult:
+        returncode = 0
+        stderr = ""
+
+    with patch("ppt2course.video.shutil.which", return_value="/usr/bin/ffmpeg"):
+        with patch("ppt2course.video.subprocess.run", return_value=FakeResult()) as mock_run:
+            _run_ffmpeg(["ffmpeg", "-y", "-i", "a.png", "out.mp4"], "test step")
+
+    called_cmd = mock_run.call_args[0][0]
+    assert called_cmd[0] == "ffmpeg"
+
+
 def test_run_ffmpeg_short_filter_complex_stays_inline():
     cmd = ["ffmpeg", "-y", "-filter_complex", "short", "-map", "[out]"]
 
@@ -1105,8 +1154,13 @@ def test_run_ffmpeg_short_command_leaves_absolute_paths_and_cwd_untouched(tmp_pa
         captured["cwd"] = kwargs.get("cwd")
         return FakeResult()
 
+    # shutil.which is mocked to None here so this test's cmd[0] stays the
+    # literal "ffmpeg" -- deterministic regardless of what's actually
+    # installed on whatever machine runs this test suite (a real resolution
+    # is covered separately below).
     with patch("ppt2course.video.subprocess.run", side_effect=fake_run):
-        _run_ffmpeg(cmd, "test step")
+        with patch("ppt2course.video.shutil.which", return_value=None):
+            _run_ffmpeg(cmd, "test step")
 
     assert captured["cmd"] == cmd
     assert captured["cwd"] is None
@@ -1144,7 +1198,8 @@ def test_run_ffmpeg_long_command_rewrites_paths_relative_to_common_dir(tmp_path)
         return FakeResult()
 
     with patch("ppt2course.video.subprocess.run", side_effect=fake_run):
-        _run_ffmpeg(cmd, "test step")
+        with patch("ppt2course.video.shutil.which", return_value=None):
+            _run_ffmpeg(cmd, "test step")
 
     assert captured["cwd"] is not None
     # Every rewritten path must actually be relative now, and resolve back
@@ -1304,7 +1359,8 @@ def _fake_run_ok():
 
 def test_add_logo_overlay_command_construction():
     with patch("ppt2course.video.subprocess.run", return_value=_fake_run_ok()) as mock_run:
-        _add_logo_overlay("video.mp4", "logo.png", "out.mp4", logo_width=160, margin=24)
+        with patch("ppt2course.video.shutil.which", return_value=None):
+            _add_logo_overlay("video.mp4", "logo.png", "out.mp4", logo_width=160, margin=24)
 
     cmd = mock_run.call_args[0][0]
     assert cmd[:2] == ["ffmpeg", "-y"]

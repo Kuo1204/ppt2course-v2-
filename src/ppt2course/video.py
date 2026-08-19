@@ -758,7 +758,36 @@ def _shorten_command_paths(cmd: list[str]) -> tuple[list[str], str | None]:
 
 
 def _run_ffmpeg(cmd: list[str], step_description: str) -> None:
-    cmd, cwd = _shorten_command_paths(list(cmd))
+    cmd = list(cmd)
+    # Every builder in this module emits the bare string "ffmpeg" as cmd[0]
+    # and relies on Windows' own CreateProcess to search PATH for it fresh
+    # on every single invocation. Resolving it to a full path once up front
+    # instead removes that PATH-search step from the equation entirely --
+    # a real WinError 206 recurrence traced this far (small deck, short
+    # command, first job on a freshly restarted server) couldn't be
+    # reproduced standalone with identical files/command, which points at
+    # something specific to how the live server process resolves "ffmpeg"
+    # rather than the command itself. Resolving up front removes that
+    # variable regardless of the exact underlying mechanism.
+    if cmd and cmd[0] == "ffmpeg":
+        resolved = shutil.which("ffmpeg")
+        if resolved:
+            # On this machine (and likely most winget-installed ffmpeg
+            # setups), that resolves to a winget shim under
+            # AppData\...\WinGet\Links\ffmpeg.EXE -- a reparse point, not
+            # the real binary -- which itself launches the real ffmpeg.exe
+            # as a further subprocess. realpath() follows that reparse
+            # point so the real binary is launched directly, one layer of
+            # indirection (and one more process spawn that could itself hit
+            # OS-level launch quirks) fewer. Only swapped in when the
+            # resolved target actually exists, so a mocked/fake path (as
+            # every test in this module uses) is left alone rather than
+            # silently mangled by realpath's own path normalization.
+            real_target = os.path.realpath(resolved)
+            if os.path.exists(real_target):
+                cmd[0] = real_target
+
+    cmd, cwd = _shorten_command_paths(cmd)
 
     last_launch_error: OSError | None = None
     for attempt in range(1, _LAUNCH_RETRY_ATTEMPTS + 1):
