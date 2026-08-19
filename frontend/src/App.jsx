@@ -252,7 +252,7 @@ function App() {
   const [pptxNotesError, setPptxNotesError] = useState(null);
   const [imageFiles, setImageFiles] = useState([]);
   const [baseName, setBaseName] = useState("課程");
-  const [scriptMode, setScriptMode] = useState("NOTES");
+  const [scriptMode, setScriptMode] = useState("OWN");
   const [textInputMode, setTextInputMode] = useState("perSlide");
   const [perSlideTexts, setPerSlideTexts] = useState([]);
   const [pasteText, setPasteText] = useState("");
@@ -551,7 +551,7 @@ function App() {
     setPptxNotesError(null);
     setImageFiles([]);
     setBaseName("課程");
-    setScriptMode("NOTES");
+    setScriptMode("OWN");
     setTextInputMode("perSlide");
     setPerSlideTexts([]);
     setPasteText("");
