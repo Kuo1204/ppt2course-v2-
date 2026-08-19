@@ -1011,11 +1011,16 @@ def test_run_ffmpeg_short_filter_complex_stays_inline():
 
     called_cmd = mock_run.call_args[0][0]
     assert "-filter_complex" in called_cmd
-    assert "-filter_complex_script" not in called_cmd
     assert called_cmd[called_cmd.index("-filter_complex") + 1] == "short"
 
 
-def test_run_ffmpeg_long_filter_complex_moves_to_script_file():
+# A long -filter_complex is deliberately left inline (never moved to a
+# -filter_complex_script file) -- a real user's ffmpeg build rejects that
+# option outright ("Unrecognized option 'filter_complex_script'"), which
+# would break every render whose filter graph crosses a length threshold.
+# See _shorten_command_paths below for how command length is actually kept
+# down instead (works regardless of ffmpeg build/version).
+def test_run_ffmpeg_long_filter_complex_is_still_passed_inline():
     long_filter = "a" * 20000
     cmd = ["ffmpeg", "-y", "-filter_complex", long_filter, "-map", "[out]"]
 
@@ -1023,56 +1028,20 @@ def test_run_ffmpeg_long_filter_complex_moves_to_script_file():
         returncode = 0
         stderr = ""
 
-    captured = {}
-
-    def fake_run(actual_cmd, **kwargs):
-        captured["cmd"] = list(actual_cmd)
-        return FakeResult()
-
-    with patch("ppt2course.video.subprocess.run", side_effect=fake_run):
+    with patch("ppt2course.video.subprocess.run", return_value=FakeResult()) as mock_run:
         _run_ffmpeg(cmd, "test step")
 
-    called_cmd = captured["cmd"]
-    assert "-filter_complex" not in called_cmd
-    assert "-filter_complex_script" in called_cmd
-    script_path = called_cmd[called_cmd.index("-filter_complex_script") + 1]
-    # The command line itself must actually be short now -- the whole point
-    # is to keep the long content out of it.
-    assert len(script_path) < 300
-    # The script file is cleaned up again once ffmpeg has been invoked.
-    assert not os.path.exists(script_path)
-
-
-def test_run_ffmpeg_long_filter_complex_script_file_contains_full_filter():
-    long_filter = "b" * 20000
-    cmd = ["ffmpeg", "-y", "-filter_complex", long_filter, "-map", "[out]"]
-
-    class FakeResult:
-        returncode = 0
-        stderr = ""
-
-    seen_content = {}
-
-    def fake_run(actual_cmd, **kwargs):
-        script_path = actual_cmd[actual_cmd.index("-filter_complex_script") + 1]
-        with open(script_path, encoding="utf-8") as f:
-            seen_content["text"] = f.read()
-        return FakeResult()
-
-    with patch("ppt2course.video.subprocess.run", side_effect=fake_run):
-        _run_ffmpeg(cmd, "test step")
-
-    assert seen_content["text"] == long_filter
+    called_cmd = mock_run.call_args[0][0]
+    assert "-filter_complex" in called_cmd
+    assert called_cmd[called_cmd.index("-filter_complex") + 1] == long_filter
 
 
 # ---- _run_ffmpeg: shortening -i/output paths on very large commands ----
 #
-# Regression coverage for a real user report that persisted even after the
-# -filter_complex_script fix above: a deck with enough slides that the
-# *rest* of the command (mostly repeated "-i <long absolute path>" pairs
-# under this project's own long OneDrive working directory) alone was
-# already big enough to hit Windows' CreateProcess length limit, with no
-# unusually long filter graph involved at all.
+# Regression coverage for a real user report: a deck with enough slides that
+# the command (mostly repeated "-i <long absolute path>" pairs under this
+# project's own long OneDrive working directory) was big enough on its own
+# to hit Windows' CreateProcess length limit.
 
 def test_run_ffmpeg_short_command_leaves_absolute_paths_and_cwd_untouched(tmp_path):
     image_path = str(tmp_path / "slide.png")

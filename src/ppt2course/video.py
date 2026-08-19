@@ -686,23 +686,18 @@ def _build_ffmpeg_command(
 # one before handing it over. A deck with many slides/overlays already
 # spends a lot of that budget on repeated "-i <long absolute path>" pairs
 # (this project's own working directories run long -- OneDrive + Chinese
-# folder names), so a correspondingly long -filter_complex graph string can
-# push the total past the limit. That surfaces as CreateProcess itself
-# failing with WinError 206 ("the filename or extension is too long") before
-# ffmpeg ever runs -- a real report from a user whose deck had many slides.
-# ffmpeg's own documented workaround is to read the filter graph from a file
-# via -filter_complex_script instead of the command line, so do that once
-# the filter string alone is already large enough to matter.
-_FILTER_COMPLEX_SCRIPT_THRESHOLD = 8000
-
-# Moving the filter graph off the command line (above) isn't always enough
-# on its own: a deck with many slides/overlays repeats a long absolute
-# working-directory prefix across dozens of "-i <path>" pairs (and the final
-# output path), and that alone can still blow the ~32K-character budget even
-# with a short filter graph. Only bother rewriting paths once the whole
-# command is already large enough that this matters -- keeps every normal
-# (small) invocation, including all of this module's tests, byte-for-byte
-# unchanged.
+# folder names). That surfaces as CreateProcess itself failing with
+# WinError 206 ("the filename or extension is too long") before ffmpeg
+# ever runs -- a real report from a user whose deck had many slides.
+#
+# ffmpeg has historically documented -filter_complex_script as a way to move
+# the filter graph itself off the command line, but it is NOT used here: a
+# real user's ffmpeg build (a current gyan.dev Windows build) rejects it
+# outright ("Unrecognized option 'filter_complex_script'"), which would turn
+# every render whose filter graph crosses a length threshold into a hard
+# failure -- worse than the bug it was meant to fix. Shortening the -i/output
+# path arguments below is a plain string-length optimization ffmpeg itself
+# has no opinion on, so it works regardless of ffmpeg build/version.
 _COMMAND_LENGTH_REWRITE_THRESHOLD = 20000
 
 
@@ -740,40 +735,21 @@ def _shorten_command_paths(cmd: list[str]) -> tuple[list[str], str | None]:
 
 
 def _run_ffmpeg(cmd: list[str], step_description: str) -> None:
-    cmd = list(cmd)
-    script_path = None
-    if "-filter_complex" in cmd:
-        filter_index = cmd.index("-filter_complex")
-        filter_complex = cmd[filter_index + 1]
-        if len(filter_complex) > _FILTER_COMPLEX_SCRIPT_THRESHOLD:
-            fd, script_path = tempfile.mkstemp(prefix="ppt2course_filter_", suffix=".txt")
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                f.write(filter_complex)
-            cmd[filter_index] = "-filter_complex_script"
-            cmd[filter_index + 1] = script_path
-
-    cmd, cwd = _shorten_command_paths(cmd)
+    cmd, cwd = _shorten_command_paths(list(cmd))
 
     try:
-        try:
-            result = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
-        except OSError as exc:
-            # e.g. the CreateProcess-level WinError 206 above -- this is
-            # ffmpeg never actually launching, distinct from ffmpeg launching
-            # and then failing (handled below via returncode).
-            raise VideoComposeError(
-                f"failed to launch ffmpeg during {step_description}: {exc}"
-            ) from exc
-        if result.returncode != 0:
-            raise VideoComposeError(
-                f"ffmpeg failed during {step_description} (exit {result.returncode}): {result.stderr}"
-            )
-    finally:
-        if script_path is not None:
-            try:
-                os.remove(script_path)
-            except OSError:
-                pass
+        result = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
+    except OSError as exc:
+        # e.g. the CreateProcess-level WinError 206 above -- this is ffmpeg
+        # never actually launching, distinct from ffmpeg launching and then
+        # failing (handled below via returncode).
+        raise VideoComposeError(
+            f"failed to launch ffmpeg during {step_description}: {exc}"
+        ) from exc
+    if result.returncode != 0:
+        raise VideoComposeError(
+            f"ffmpeg failed during {step_description} (exit {result.returncode}): {result.stderr}"
+        )
 
 
 def _add_logo_overlay(
