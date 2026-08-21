@@ -823,7 +823,7 @@ function App() {
                 setSubtitleOutlineColor={setSubtitleOutlineColor}
                 subtitleBold={subtitleBold}
                 setSubtitleBold={setSubtitleBold}
-                previewImageUrl={thumbUrls[0]}
+                thumbUrls={thumbUrls}
                 logoFile={logoFile}
                 setLogoFile={setLogoFile}
                 logoOpacity={logoOpacity}
@@ -1522,7 +1522,7 @@ function ExtrasStep({
   setSubtitleOutlineColor,
   subtitleBold,
   setSubtitleBold,
-  previewImageUrl,
+  thumbUrls,
   logoFile,
   setLogoFile,
   logoOpacity,
@@ -1551,62 +1551,154 @@ function ExtrasStep({
   avoidVoiceOverlap,
   setAvoidVoiceOverlap,
 }) {
+  const [previewSlideIndex, setPreviewSlideIndex] = useState(0);
+  // Clamp instead of resetting to 0 whenever the deck shrinks (e.g. a slide
+  // removed in Step 01) so picking page 8 of 10 then trimming to 9 slides
+  // still shows the nearest real page instead of silently jumping back to
+  // page 1.
+  const clampedPreviewIndex = Math.min(previewSlideIndex, Math.max(thumbUrls.length - 1, 0));
+  const previewImageUrl = thumbUrls[clampedPreviewIndex];
+
+  const logoPreviewFiles = useMemo(() => (logoFile ? [logoFile] : []), [logoFile]);
+  const logoPreviewUrl = useObjectUrls(logoPreviewFiles)[0];
+
+  const resolutionIsDefault = resolution === RESOLUTIONS[0].value;
+  const subtitleStyleIsDefault =
+    fontSize === FONT_SIZES[1].value &&
+    subtitlePositionPercent === SUBTITLE_POSITION_DEFAULT &&
+    subtitleFontColor === SUBTITLE_FONT_COLOR_DEFAULT &&
+    subtitleOutlineColor === SUBTITLE_OUTLINE_COLOR_DEFAULT &&
+    subtitleBold === SUBTITLE_BOLD_DEFAULT;
+
   return (
     <>
       <CardHead eyebrow="Step 04" title="進階選項" trailing="全部選填" />
       <div className="field-grid">
-        <div className="field">
-          <label htmlFor="resolution-select">
-            解析度 <FieldTag required={false} />
+        <div className="field full">
+          <label htmlFor="preview-slide-select">
+            預覽頁面 <FieldTag required={false} />
           </label>
-          <select
-            id="resolution-select"
-            value={resolution}
-            onChange={(e) => setResolution(e.target.value)}
+          {thumbUrls.length > 0 ? (
+            <select
+              id="preview-slide-select"
+              value={clampedPreviewIndex}
+              onChange={(e) => setPreviewSlideIndex(Number(e.target.value))}
+            >
+              {thumbUrls.map((_, i) => (
+                <option key={i} value={i}>
+                  第 {i + 1} 頁
+                </option>
+              ))}
+            </select>
+          ) : (
+            <p className="hint" style={{ margin: 0 }}>
+              先在 Step 01 上傳投影片圖片，這裡就能用實際畫面預覽字幕與 Logo。
+            </p>
+          )}
+
+          <div
+            className="slide-settings-preview"
+            style={previewImageUrl ? { backgroundImage: `url(${previewImageUrl})` } : undefined}
           >
-            {RESOLUTIONS.map((r) => (
-              <option key={r.value} value={r.value}>
-                {r.label}
-              </option>
-            ))}
-          </select>
+            <span
+              className="subtitle-position-preview-caption"
+              style={{
+                bottom: `${subtitlePositionPercent}%`,
+                fontSize: `clamp(8px, ${(fontSize / 1080) * (9 / 16) * 100}cqw, 72px)`,
+                color: subtitleFontColor,
+                fontWeight: subtitleBold ? 700 : 400,
+                textShadow: [
+                  `-1px -1px 0 ${subtitleOutlineColor}`,
+                  `1px -1px 0 ${subtitleOutlineColor}`,
+                  `-1px 1px 0 ${subtitleOutlineColor}`,
+                  `1px 1px 0 ${subtitleOutlineColor}`,
+                  `0 0 6px ${subtitleOutlineColor}`,
+                ].join(", "),
+              }}
+            >
+              字幕預覽文字
+            </span>
+            {logoFile && (
+              <img
+                className="logo-position-preview-logo"
+                src={logoPreviewUrl}
+                alt=""
+                style={{
+                  ...logoPositionStyle(logoPosition, `${(LOGO_MARGIN_REFERENCE / 1920) * 100}cqw`),
+                  width: `${(logoSize / 1920) * 100}cqw`,
+                  opacity: logoOpacity / 100,
+                }}
+              />
+            )}
+          </div>
+          <p className="hint" style={{ margin: "6px 0 0" }}>
+            {previewImageUrl
+              ? "字幕與 Logo 的大小、位置、顏色皆按實際畫面比例預覽，展開下方各選項即可即時看到變化"
+              : "尚未有可預覽的頁面"}
+          </p>
         </div>
 
-        <div className="field">
-          <label htmlFor="font-size-select">
-            字幕大小 <FieldTag required={false} />
-          </label>
-          <select
-            id="font-size-select"
-            value={fontSize}
-            onChange={(e) => setFontSize(Number(e.target.value))}
-          >
-            {FONT_SIZES.map((f) => (
-              <option key={f.value} value={f.value}>
-                {f.label}（約 {scaledFontSize(f.value, resolution)}px）
-              </option>
-            ))}
-          </select>
-        </div>
+        <CollapsibleField
+          title="字幕樣式（大小／位置／顏色）"
+          defaultOpen={!subtitleStyleIsDefault}
+          summary={subtitleStyleIsDefault ? "使用預設樣式" : "已調整"}
+        >
+          <div className="field-grid">
+            <div className="field">
+              <label htmlFor="font-size-select">
+                字幕大小 <FieldTag required={false} />
+              </label>
+              <select
+                id="font-size-select"
+                value={fontSize}
+                onChange={(e) => setFontSize(Number(e.target.value))}
+              >
+                {FONT_SIZES.map((f) => (
+                  <option key={f.value} value={f.value}>
+                    {f.label}（約 {scaledFontSize(f.value, resolution)}px）
+                  </option>
+                ))}
+              </select>
+            </div>
 
-        <SubtitlePositionField
-          percent={subtitlePositionPercent}
-          setPercent={setSubtitlePositionPercent}
-          previewImageUrl={previewImageUrl}
-          fontSize={fontSize}
-          fontColor={subtitleFontColor}
-          outlineColor={subtitleOutlineColor}
-          bold={subtitleBold}
-        />
+            <SubtitlePositionField
+              percent={subtitlePositionPercent}
+              setPercent={setSubtitlePositionPercent}
+            />
 
-        <SubtitleColorField
-          fontColor={subtitleFontColor}
-          setFontColor={setSubtitleFontColor}
-          outlineColor={subtitleOutlineColor}
-          setOutlineColor={setSubtitleOutlineColor}
-          bold={subtitleBold}
-          setBold={setSubtitleBold}
-        />
+            <SubtitleColorField
+              fontColor={subtitleFontColor}
+              setFontColor={setSubtitleFontColor}
+              outlineColor={subtitleOutlineColor}
+              setOutlineColor={setSubtitleOutlineColor}
+              bold={subtitleBold}
+              setBold={setSubtitleBold}
+            />
+          </div>
+        </CollapsibleField>
+
+        <CollapsibleField
+          title="輸出解析度"
+          defaultOpen={!resolutionIsDefault}
+          summary={RESOLUTIONS.find((r) => r.value === resolution)?.label}
+        >
+          <div className="field">
+            <label htmlFor="resolution-select">
+              解析度 <FieldTag required={false} />
+            </label>
+            <select
+              id="resolution-select"
+              value={resolution}
+              onChange={(e) => setResolution(e.target.value)}
+            >
+              {RESOLUTIONS.map((r) => (
+                <option key={r.value} value={r.value}>
+                  {r.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        </CollapsibleField>
 
         <CollapsibleField
           title="自訂詞庫"
@@ -1647,7 +1739,6 @@ function ExtrasStep({
             size={logoSize}
             setSize={setLogoSize}
             resolution={resolution}
-            previewImageUrl={previewImageUrl}
           />
         </CollapsibleField>
 
@@ -1814,32 +1905,11 @@ function PacingField({
 
 // 目前使用系統內建的簡約風格佔位角色（idle/talk_open/talk_close 嘴型會依真實
 // 語音時間點自動切換），尚未支援上傳自訂角色圖檔。
-function SubtitlePositionField({
-  percent,
-  setPercent,
-  previewImageUrl,
-  fontSize,
-  fontColor,
-  outlineColor,
-  bold,
-}) {
-  // True proportional preview: ffmpeg/libass burns FontSize as a literal
-  // pixel count against the real output's actual height (see
-  // scaledFontSize / DEFAULT_FONT_SIZE), so on the real video the caption's
-  // ink height is (referencePx / 1080) of the frame — the same fraction
-  // regardless of which output resolution is chosen, by design. This
-  // preview box keeps the same 16:9 aspect ratio as every selectable
-  // output resolution, so converting that same fraction into cqw ("1% of
-  // this box's own rendered width") reproduces the real relative size
-  // exactly, with no separate fudge factor: what's shown here is what
-  // actually renders. (An earlier version scaled against the preview
-  // box's width with an arbitrary legibility factor instead of the real
-  // output height — it looked fine in isolation, but didn't match the
-  // real video, which is exactly what caused subtitles to come out much
-  // smaller on screen than the preview suggested.)
-  const PREVIEW_ASPECT_HEIGHT_OVER_WIDTH = 9 / 16;
-  const previewFontSizeCqw = (fontSize / 1080) * PREVIEW_ASPECT_HEIGHT_OVER_WIDTH * 100;
-
+// The live preview (with real size/color/position) now lives in the shared
+// big preview box at the top of ExtrasStep, driven by this same percent
+// state -- so dragging this slider updates that preview immediately even
+// while this field's own accordion panel is collapsed.
+function SubtitlePositionField({ percent, setPercent }) {
   return (
     <div className="field full">
       <label htmlFor="subtitle-position-range">
@@ -1854,35 +1924,6 @@ function SubtitlePositionField({
         value={percent}
         onChange={(e) => setPercent(Number(e.target.value))}
       />
-
-      <div
-        className="subtitle-position-preview"
-        style={previewImageUrl ? { backgroundImage: `url(${previewImageUrl})` } : undefined}
-      >
-        <span
-          className="subtitle-position-preview-caption"
-          style={{
-            bottom: `${percent}%`,
-            fontSize: `clamp(8px, ${previewFontSizeCqw}cqw, 72px)`,
-            color: fontColor,
-            fontWeight: bold ? 700 : 400,
-            textShadow: [
-              `-1px -1px 0 ${outlineColor}`,
-              `1px -1px 0 ${outlineColor}`,
-              `-1px 1px 0 ${outlineColor}`,
-              `1px 1px 0 ${outlineColor}`,
-              `0 0 6px ${outlineColor}`,
-            ].join(", "),
-          }}
-        >
-          字幕預覽文字
-        </span>
-      </div>
-      <p className="hint" style={{ margin: "6px 0 0" }}>
-        {previewImageUrl
-          ? "字級、位置、顏色皆按實際畫面比例預覽"
-          : "先在 Step 01 上傳投影片圖片，這裡就會用實際畫面預覽字幕高度與字級"}
-      </p>
     </div>
   );
 }
@@ -2005,7 +2046,6 @@ function LogoField({
   size,
   setSize,
   resolution,
-  previewImageUrl,
 }) {
   const [resetKey, setResetKey] = useState(0);
   // `file ? [file] : []` is a fresh array on every render regardless of
@@ -2104,26 +2144,8 @@ function LogoField({
               </div>
             </div>
           </div>
-
-          <div
-            className="logo-position-preview"
-            style={previewImageUrl ? { backgroundImage: `url(${previewImageUrl})` } : undefined}
-          >
-            <img
-              className="logo-position-preview-logo"
-              src={previewUrl}
-              alt=""
-              style={{
-                ...logoPositionStyle(position, `${(LOGO_MARGIN_REFERENCE / 1920) * 100}cqw`),
-                width: `${(size / 1920) * 100}cqw`,
-                opacity: opacity / 100,
-              }}
-            />
-          </div>
           <p className="hint" style={{ margin: "6px 0 0" }}>
-            {previewImageUrl
-              ? "大小、位置皆按實際畫面比例預覽"
-              : "先在 Step 01 上傳投影片圖片，這裡就會用實際畫面預覽 Logo 大小與位置"}
+            大小、位置會同步顯示在上方的預覽畫面。
           </p>
         </div>
       )}

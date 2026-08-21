@@ -488,13 +488,18 @@ input[type="range"] {
   letter-spacing: 0.04em;
 }
 
-.subtitle-position-preview {
+/* Shared big live preview at the top of Step 4 -- shows the subtitle
+   caption and (if set) the Logo overlay together, on whichever page the
+   使用者 picks via the page-select above it. Sized noticeably larger than
+   the old per-field preview boxes it replaces (420px) since this is now
+   the single, always-visible anchor for every Step 4 visual setting. */
+.slide-settings-preview {
   position: relative;
   margin-top: 10px;
   width: 100%;
-  max-width: 420px;
+  max-width: 720px;
   aspect-ratio: 16 / 9;
-  border-radius: 3px;
+  border-radius: 4px;
   border: 1px solid var(--border);
   overflow: hidden;
   background:
@@ -502,10 +507,10 @@ input[type="range"] {
     center / cover no-repeat;
   background-size: cover;
   background-position: center;
-  /* Lets the caption size itself in cqw ("% of this box's own rendered
-     width") so it stays proportionally correct — matching the real burn-in,
-     which sizes FontSize in literal pixels against the actual output
-     resolution — no matter how wide this box actually renders at. */
+  /* Lets the caption/logo size themselves in cqw ("% of this box's own
+     rendered width") so they stay proportionally correct — matching the
+     real burn-in/overlay, which sizes both as literal pixels against the
+     actual output resolution — no matter how wide this box renders at. */
   container-type: inline-size;
 }
 
@@ -598,28 +603,6 @@ input[type="range"] {
   color: var(--surface);
   background: var(--accent);
   border-color: var(--accent);
-}
-
-.logo-position-preview {
-  position: relative;
-  margin-top: 10px;
-  width: 100%;
-  max-width: 420px;
-  aspect-ratio: 16 / 9;
-  border-radius: 3px;
-  border: 1px solid var(--border);
-  overflow: hidden;
-  background:
-    linear-gradient(135deg, var(--surface-raised), var(--surface))
-    center / cover no-repeat;
-  background-size: cover;
-  background-position: center;
-  /* Lets the logo size itself in cqw ("% of this box's own rendered
-     width") so both its size and its distance from the corner stay
-     proportionally correct — matching the real overlay, which sizes both
-     as literal pixels against the actual output resolution — no matter
-     how wide this box actually renders at. */
-  container-type: inline-size;
 }
 
 .logo-position-preview-logo {
