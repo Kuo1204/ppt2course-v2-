@@ -1678,26 +1678,33 @@ function ExtrasStep({
         </CollapsibleField>
 
         <CollapsibleField
-          title="輸出解析度"
-          defaultOpen={!resolutionIsDefault}
-          summary={RESOLUTIONS.find((r) => r.value === resolution)?.label}
+          title="節奏控制（停頓 ／ 聲音重疊）"
+          defaultOpen={
+            readingPauseSec > 0 ||
+            closingPauseSec > 0 ||
+            targetDurationEnabled ||
+            avoidVoiceOverlap
+          }
+          summary={
+            targetDurationEnabled
+              ? `目標長度 ${formatSecondsAsMinSec(targetDurationSec)}`
+              : readingPauseSec > 0 || closingPauseSec > 0 || avoidVoiceOverlap
+                ? "已調整"
+                : "使用預設節奏"
+          }
         >
-          <div className="field">
-            <label htmlFor="resolution-select">
-              解析度 <FieldTag required={false} />
-            </label>
-            <select
-              id="resolution-select"
-              value={resolution}
-              onChange={(e) => setResolution(e.target.value)}
-            >
-              {RESOLUTIONS.map((r) => (
-                <option key={r.value} value={r.value}>
-                  {r.label}
-                </option>
-              ))}
-            </select>
-          </div>
+          <PacingField
+            readingPauseSec={readingPauseSec}
+            setReadingPauseSec={setReadingPauseSec}
+            closingPauseSec={closingPauseSec}
+            setClosingPauseSec={setClosingPauseSec}
+            targetDurationEnabled={targetDurationEnabled}
+            setTargetDurationEnabled={setTargetDurationEnabled}
+            targetDurationSec={targetDurationSec}
+            setTargetDurationSec={setTargetDurationSec}
+            avoidVoiceOverlap={avoidVoiceOverlap}
+            setAvoidVoiceOverlap={setAvoidVoiceOverlap}
+          />
         </CollapsibleField>
 
         <CollapsibleField
@@ -1758,33 +1765,26 @@ function ExtrasStep({
         </CollapsibleField>
 
         <CollapsibleField
-          title="節奏控制（停頓 ／ 聲音重疊）"
-          defaultOpen={
-            readingPauseSec > 0 ||
-            closingPauseSec > 0 ||
-            targetDurationEnabled ||
-            avoidVoiceOverlap
-          }
-          summary={
-            targetDurationEnabled
-              ? `目標長度 ${formatSecondsAsMinSec(targetDurationSec)}`
-              : readingPauseSec > 0 || closingPauseSec > 0 || avoidVoiceOverlap
-                ? "已調整"
-                : "使用預設節奏"
-          }
+          title="輸出解析度"
+          defaultOpen={!resolutionIsDefault}
+          summary={RESOLUTIONS.find((r) => r.value === resolution)?.label}
         >
-          <PacingField
-            readingPauseSec={readingPauseSec}
-            setReadingPauseSec={setReadingPauseSec}
-            closingPauseSec={closingPauseSec}
-            setClosingPauseSec={setClosingPauseSec}
-            targetDurationEnabled={targetDurationEnabled}
-            setTargetDurationEnabled={setTargetDurationEnabled}
-            targetDurationSec={targetDurationSec}
-            setTargetDurationSec={setTargetDurationSec}
-            avoidVoiceOverlap={avoidVoiceOverlap}
-            setAvoidVoiceOverlap={setAvoidVoiceOverlap}
-          />
+          <div className="field">
+            <label htmlFor="resolution-select">
+              解析度 <FieldTag required={false} />
+            </label>
+            <select
+              id="resolution-select"
+              value={resolution}
+              onChange={(e) => setResolution(e.target.value)}
+            >
+              {RESOLUTIONS.map((r) => (
+                <option key={r.value} value={r.value}>
+                  {r.label}
+                </option>
+              ))}
+            </select>
+          </div>
         </CollapsibleField>
       </div>
     </>
