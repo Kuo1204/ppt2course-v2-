@@ -339,32 +339,6 @@
   cursor: pointer;
 }
 
-.avatar-slide-picker {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 10px;
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  background: var(--surface-raised);
-  max-height: 160px;
-  overflow-y: auto;
-}
-
-.avatar-slide-picker-item {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  padding: 4px 8px;
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  background: var(--surface);
-  font-size: 12px;
-  font-weight: 400;
-  text-transform: none;
-  letter-spacing: normal;
-  cursor: pointer;
-}
 
 select,
 input[type="text"],

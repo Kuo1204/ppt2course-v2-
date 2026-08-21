@@ -156,27 +156,6 @@ const SUBTITLE_FONT_COLOR_DEFAULT = "#FFFFFF";
 const SUBTITLE_OUTLINE_COLOR_DEFAULT = "#000000";
 const SUBTITLE_BOLD_DEFAULT = false;
 
-// Mirrors avatar.py's AvatarMode/AVATAR_MODES.
-const AVATAR_MODES = [
-  { value: "none", label: "不使用" },
-  { value: "keyframe", label: "關鍵頁面（有講稿內容的頁面才顯示）" },
-  { value: "always", label: "全程顯示" },
-  { value: "custom", label: "自訂頁面" },
-];
-// Mirrors video.py's AVATAR_POSITIONS.
-const AVATAR_POSITIONS = [
-  { value: "bottom_right", label: "右下" },
-  { value: "bottom_left", label: "左下" },
-  { value: "right", label: "右側" },
-  { value: "left", label: "左側" },
-];
-// Mirrors video.py's AVATAR_SIZES.
-const AVATAR_SIZES = [
-  { value: "small", label: "小" },
-  { value: "medium", label: "中" },
-  { value: "large", label: "大" },
-];
-
 const GEMINI_API_KEY_URL = "https://aistudio.google.com/app/apikey";
 const PEXELS_API_KEY_URL = "https://www.pexels.com/api/";
 const POLL_INTERVAL_MS = 2000;
@@ -280,11 +259,6 @@ function App() {
   const [outroFile, setOutroFile] = useState(null);
   const [customDict, setCustomDict] = useState("");
 
-  const [avatarMode, setAvatarMode] = useState("none");
-  const [avatarPosition, setAvatarPosition] = useState("bottom_right");
-  const [avatarSize, setAvatarSize] = useState("small");
-  // Set of 1-based slide numbers, only used when avatarMode === "custom".
-  const [avatarCustomSlides, setAvatarCustomSlides] = useState([]);
 
   const [readingPauseSec, setReadingPauseSec] = useState(0);
   const [closingPauseSec, setClosingPauseSec] = useState(0);
@@ -696,15 +670,6 @@ function App() {
     if (outroFile) form.append("outro", outroFile);
     if (customDict.trim()) form.append("custom_dict", customDict);
 
-    if (avatarMode !== "none") {
-      form.append("avatar_mode", avatarMode);
-      form.append("avatar_position", avatarPosition);
-      form.append("avatar_size", avatarSize);
-      if (avatarMode === "custom") {
-        form.append("avatar_custom_slides", JSON.stringify(avatarCustomSlides));
-      }
-    }
-
     if (targetDurationEnabled) {
       // Target mode auto-computes reading pauses server-side and ignores
       // any flat reading_pause_ms/closing_pause_ms, so those are simply
@@ -875,14 +840,6 @@ function App() {
                 setOutroFile={setOutroFile}
                 customDict={customDict}
                 setCustomDict={setCustomDict}
-                avatarMode={avatarMode}
-                setAvatarMode={setAvatarMode}
-                avatarPosition={avatarPosition}
-                setAvatarPosition={setAvatarPosition}
-                avatarSize={avatarSize}
-                setAvatarSize={setAvatarSize}
-                avatarCustomSlides={avatarCustomSlides}
-                setAvatarCustomSlides={setAvatarCustomSlides}
                 slideCount={imageFiles.length}
                 readingPauseSec={readingPauseSec}
                 setReadingPauseSec={setReadingPauseSec}
@@ -945,10 +902,6 @@ function App() {
                     `自訂詞庫（${customDict.split("\n").filter((l) => l.trim()).length} 個詞）`,
                   Object.values(brollChoices).filter((c) => c && c.asset).length > 0 &&
                     `AI 視覺素材（${Object.values(brollChoices).filter((c) => c && c.asset).length} 頁）`,
-                  avatarMode !== "none" &&
-                    `2D 講師 Avatar（${AVATAR_MODES.find((m) => m.value === avatarMode)?.label}・${
-                      AVATAR_POSITIONS.find((p) => p.value === avatarPosition)?.label
-                    }・${AVATAR_SIZES.find((s) => s.value === avatarSize)?.label}）`,
                   targetDurationEnabled
                     ? `目標長度（${formatSecondsAsMinSec(targetDurationSec)}，自動分配停頓）`
                     : (readingPauseSec > 0 || closingPauseSec > 0) &&
@@ -1586,14 +1539,6 @@ function ExtrasStep({
   setOutroFile,
   customDict,
   setCustomDict,
-  avatarMode,
-  setAvatarMode,
-  avatarPosition,
-  setAvatarPosition,
-  avatarSize,
-  setAvatarSize,
-  avatarCustomSlides,
-  setAvatarCustomSlides,
   slideCount,
   readingPauseSec,
   setReadingPauseSec,
@@ -1722,27 +1667,20 @@ function ExtrasStep({
         </CollapsibleField>
 
         <CollapsibleField
-          title="2D 講師 Avatar"
-          defaultOpen
-          summary={AVATAR_MODES.find((m) => m.value === avatarMode)?.label}
-        >
-          <AvatarField
-            mode={avatarMode}
-            setMode={setAvatarMode}
-            position={avatarPosition}
-            setPosition={setAvatarPosition}
-            size={avatarSize}
-            setSize={setAvatarSize}
-            customSlides={avatarCustomSlides}
-            setCustomSlides={setAvatarCustomSlides}
-            slideCount={slideCount}
-          />
-        </CollapsibleField>
-
-        <CollapsibleField
           title="節奏控制（停頓 ／ 聲音重疊）"
-          defaultOpen
-          summary="使用預設節奏"
+          defaultOpen={
+            readingPauseSec > 0 ||
+            closingPauseSec > 0 ||
+            targetDurationEnabled ||
+            avoidVoiceOverlap
+          }
+          summary={
+            targetDurationEnabled
+              ? `目標長度 ${formatSecondsAsMinSec(targetDurationSec)}`
+              : readingPauseSec > 0 || closingPauseSec > 0 || avoidVoiceOverlap
+                ? "已調整"
+                : "使用預設節奏"
+          }
         >
           <PacingField
             readingPauseSec={readingPauseSec}
@@ -1876,95 +1814,6 @@ function PacingField({
 
 // 目前使用系統內建的簡約風格佔位角色（idle/talk_open/talk_close 嘴型會依真實
 // 語音時間點自動切換），尚未支援上傳自訂角色圖檔。
-function AvatarField({
-  mode,
-  setMode,
-  position,
-  setPosition,
-  size,
-  setSize,
-  customSlides,
-  setCustomSlides,
-  slideCount,
-}) {
-  function toggleSlide(n) {
-    setCustomSlides((prev) =>
-      prev.includes(n) ? prev.filter((x) => x !== n) : [...prev, n].sort((a, b) => a - b)
-    );
-  }
-
-  return (
-    <>
-      <label htmlFor="avatar-mode-select">顯示模式</label>
-      <select
-        id="avatar-mode-select"
-        value={mode}
-        onChange={(e) => setMode(e.target.value)}
-      >
-        {AVATAR_MODES.map((m) => (
-          <option key={m.value} value={m.value}>
-            {m.label}
-          </option>
-        ))}
-      </select>
-      <p className="hint" style={{ margin: "6px 0 0" }}>
-        使用內建的簡約風格佔位角色，嘴型會依這一頁旁白的真實語音時間點自動開合，不會改變任何配音或字幕的時間軸。
-      </p>
-
-      {mode !== "none" && (
-        <div className="field-grid" style={{ marginTop: 10 }}>
-          <div className="field">
-            <label htmlFor="avatar-position-select">位置</label>
-            <select
-              id="avatar-position-select"
-              value={position}
-              onChange={(e) => setPosition(e.target.value)}
-            >
-              {AVATAR_POSITIONS.map((p) => (
-                <option key={p.value} value={p.value}>
-                  {p.label}
-                </option>
-              ))}
-            </select>
-          </div>
-          <div className="field">
-            <label htmlFor="avatar-size-select">大小</label>
-            <select
-              id="avatar-size-select"
-              value={size}
-              onChange={(e) => setSize(e.target.value)}
-            >
-              {AVATAR_SIZES.map((s) => (
-                <option key={s.value} value={s.value}>
-                  {s.label}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          {mode === "custom" && slideCount > 0 && (
-            <div className="field full">
-              <label>選擇要顯示 Avatar 的頁面</label>
-              <div className="avatar-slide-picker">
-                {Array.from({ length: slideCount }, (_, i) => i + 1).map((n) => (
-                  <label key={n} className="avatar-slide-picker-item">
-                    <input
-                      type="checkbox"
-                      checked={customSlides.includes(n)}
-                      onChange={() => toggleSlide(n)}
-                    />
-                    第 {n} 頁
-                  </label>
-                ))}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-    </>
-  );
-}
-
 function SubtitlePositionField({
   percent,
   setPercent,
@@ -2610,7 +2459,7 @@ function FieldTag({ required }) {
 }
 
 // Collapsed-by-default wrapper for an optional feature block (Logo, BGM,
-// Avatar, pacing controls, ...). `defaultOpen` should reflect whether the
+// pacing controls, ...). `defaultOpen` should reflect whether the
 // field already carries a non-default value (e.g. a file was already
 // chosen) so returning to this step doesn't hide something the user already
 // set up. Each step remounts this component fresh when the wizard
