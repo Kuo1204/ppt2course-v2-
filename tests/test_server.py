@@ -1411,11 +1411,12 @@ def test_media_search_forwards_optional_api_key_and_limit(tmp_path):
     assert mock_search.call_args.kwargs["media_type"] is VisualAssetType.VIDEO
 
 
-# ---------- PPTX preview (real slide thumbnails for the upload step) ----------
+# ---------- PPTX preview (approximate slide thumbnails for the upload step) ----------
 # Rendering the whole video (or even just extracting text) doesn't tell the
-# user whether they uploaded the right deck. This endpoint runs LibreOffice
-# synchronously to produce real slide thumbnails, mirroring the visual
-# feedback the per-slide image upload field already gives.
+# user whether they uploaded the right deck. This endpoint synchronously
+# redraws an approximation of each slide (see pptx_preview.py -- no external
+# renderer involved), mirroring the visual feedback the per-slide image
+# upload field already gives.
 
 
 def test_pptx_preview_returns_one_data_url_per_thumbnail():
@@ -1445,7 +1446,7 @@ def test_pptx_preview_wraps_conversion_error_as_502():
 
     with patch(
         "ppt2course.server.render_pptx_thumbnails",
-        side_effect=PptxPreviewError("LibreOffice not found"),
+        side_effect=PptxPreviewError("failed to open pptx: bad zip"),
     ):
         response = client.post(
             "/api/pptx-preview",
@@ -1453,7 +1454,7 @@ def test_pptx_preview_wraps_conversion_error_as_502():
         )
 
     assert response.status_code == 502
-    assert "LibreOffice not found" in response.json()["detail"]
+    assert "failed to open pptx: bad zip" in response.json()["detail"]
 
 
 def test_pptx_preview_never_persists_the_uploaded_file(tmp_path):

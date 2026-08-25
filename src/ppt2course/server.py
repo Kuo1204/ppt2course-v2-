@@ -444,8 +444,9 @@ def create_app(
     @app.post("/api/pptx-preview")
     async def pptx_preview(pptx: UploadFile = File(...)):
         # Mirrors /api/generate-script's ephemeral-tempfile pattern: the
-        # upload is written to disk only long enough for LibreOffice to read
-        # it, then deleted — nothing from this preview-only call persists.
+        # upload is written to disk only long enough for render_pptx_thumbnails
+        # to read it, then deleted — nothing from this preview-only call
+        # persists.
         with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as tmp:
             tmp.write(await pptx.read())
             pptx_path = tmp.name

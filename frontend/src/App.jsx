@@ -408,11 +408,12 @@ function App() {
     }
   }
 
-  // Real slide thumbnails (rendered server-side via LibreOffice), not just a
-  // filename — mirrors the instant visual confirmation the per-slide image
-  // upload field already gives, so the user can tell at a glance they picked
-  // the right deck. Runs automatically on file selection; the request id
-  // guards against an in-flight request from a since-replaced file
+  // Approximate slide thumbnails (rendered server-side, no external
+  // renderer required), not just a filename — mirrors the instant visual
+  // confirmation the per-slide image upload field already gives, so the
+  // user can tell at a glance they picked the right deck. Runs
+  // automatically on file selection; the request id guards against an
+  // in-flight request from a since-replaced file
   // overwriting the current one's result.
   async function loadPptxPreview(file) {
     const requestId = ++pptxPreviewRequestRef.current;
