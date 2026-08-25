@@ -22,6 +22,12 @@ FROM python:3.12-slim AS runtime
 # "Noto Sans CJK TC" explicitly — still renders correctly, just not in the
 # intended typeface.
 WORKDIR /app
+# Route pip through the company's internal Nexus proxy rather than public
+# PyPI directly -- faster, and not subject to whatever intermittently made
+# a plain `pip install` fail to resolve even its own build backend
+# (setuptools) with "No matching distribution found (from versions: none)".
+ARG PIP_INDEX_URL=http://wtu-repo-prod.wtmec.com:8081/repository/pypi-proxy/simple
+ARG PIP_TRUSTED_HOST=wtu-repo-prod.wtmec.com:8081
 COPY pyproject.toml ./
 COPY src/ ./src/
 RUN pip install --no-cache-dir .
