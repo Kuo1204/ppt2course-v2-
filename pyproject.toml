@@ -13,6 +13,10 @@ dependencies = [
     "python-multipart>=0.0.9",
     "pymupdf>=1.24",
     "jieba>=0.42",
+    # Provides the `ffmpeg`/`ffprobe` executables via a pip-downloaded static
+    # build instead of `apt-get install ffmpeg` -- see the Dockerfile comment
+    # next to where this is pre-fetched for why.
+    "static-ffmpeg>=2.5",
 ]
 
 [project.optional-dependencies]
