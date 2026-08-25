@@ -4,6 +4,12 @@
 # which host ends up running it.
 
 FROM node:22-slim AS frontend-build
+# Route npm through the company's internal Nexus proxy rather than public
+# npm directly -- `npm ci` against the public registry has failed twice in a
+# row here with npm's own generic "Exit handler never called!" bug, which
+# surfaces under flaky/slow registry connections; this is the same
+# public-registry-reliability issue the pip install below already hit.
+ARG NPM_CONFIG_REGISTRY=http://wtu-repo-prod.wtmec.com:8081/repository/npm-public/
 WORKDIR /app/frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
@@ -30,7 +36,10 @@ ARG PIP_INDEX_URL=http://wtu-repo-prod.wtmec.com:8081/repository/pypi-proxy/simp
 ARG PIP_TRUSTED_HOST=wtu-repo-prod.wtmec.com:8081
 COPY pyproject.toml ./
 COPY src/ ./src/
-RUN pip install --no-cache-dir .
+# --timeout 100: pip's 15s default read timeout was too short for a large
+# wheel (pymupdf) the first time Nexus's proxy cache has to fetch it
+# upstream rather than serve a cached copy -- hit twice in earlier attempts.
+RUN pip install --no-cache-dir --timeout 100 .
 
 # Pre-fetch the ffmpeg/ffprobe binaries at build time (rather than lazily on
 # a user's first request) so they're baked into this image layer, and so a
