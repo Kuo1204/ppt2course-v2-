@@ -41,15 +41,15 @@ COPY src/ ./src/
 # upstream rather than serve a cached copy -- hit twice in earlier attempts.
 RUN pip install --no-cache-dir --timeout 100 .
 
-# Pre-fetch the ffmpeg/ffprobe binaries at build time (rather than lazily on
-# a user's first request) so they're baked into this image layer, and so a
-# broken download path fails the build immediately with a clear error
-# instead of failing silently in production later. static-ffmpeg's own API
-# only returns the downloaded binaries' paths -- symlink them onto PATH so
-# every existing `subprocess.run(["ffmpeg", ...])`/`["ffprobe", ...])` call
-# in this codebase keeps working unchanged.
-RUN python -c "import os; from static_ffmpeg.run import get_or_fetch_platform_executables_else_raise; ffmpeg_path, ffprobe_path = get_or_fetch_platform_executables_else_raise(); os.symlink(ffmpeg_path, '/usr/local/bin/ffmpeg'); os.symlink(ffprobe_path, '/usr/local/bin/ffprobe')" \
-    && ffmpeg -version && ffprobe -version
+# NOT pre-fetched here: static-ffmpeg's actual ffmpeg/ffprobe binaries come
+# from a GitHub raw-content download outside Nexus, and doing that at *build*
+# time here got its TLS connection reset immediately, every attempt -- this
+# platform's build servers only reliably reach the internal Nexus proxy and
+# GitLab, not arbitrary external hosts (same reason apt-get couldn't reach
+# deb.debian.org earlier). The *running container*, unlike the build server,
+# can reach the internet -- so ppt2course/server.py calls
+# `static_ffmpeg.add_paths()` once at import time instead, fetching these on
+# the container's first startup rather than during this build.
 
 COPY --from=frontend-build /app/frontend/dist ./frontend/dist
 

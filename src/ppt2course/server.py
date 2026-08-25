@@ -24,6 +24,8 @@ from pathlib import Path
 from urllib.request import Request as UrllibRequest
 from urllib.request import urlopen
 
+import static_ffmpeg
+
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, Response
@@ -75,6 +77,15 @@ from ppt2course.visual_analyzer import (
     analyze_visual_needs,
     suggest_broll_window_ms,
 )
+
+# The platform's build servers can't reliably reach arbitrary external hosts
+# (only the internal Nexus proxy and GitLab), so ffmpeg/ffprobe can't be
+# fetched at *build* time there -- but the running *container* can reach the
+# internet fine. `weak=True` skips the download entirely when ffmpeg/ffprobe
+# are already on PATH (true for local dev machines with ffmpeg installed the
+# usual way), so this is a no-op there; in the deployed container it's a
+# one-time download on first startup, cached for the container's lifetime.
+static_ffmpeg.add_paths(weak=True)
 
 # The frontend no longer asks the user for a Gemini API key -- it's expected
 # to be configured once as a server environment variable instead. A request
