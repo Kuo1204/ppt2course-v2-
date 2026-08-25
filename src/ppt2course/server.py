@@ -2,9 +2,11 @@
 
 Each job gets its own uploads/work/out directory under ``data_root`` so
 concurrent (queued) jobs from different users never collide. The Gemini API
-key, if supplied, is passed straight through to the pipeline in-memory for
-that one job and is never written to a job record or echoed back in any
-response.
+key normally comes from the ``GEMINI_API_KEY`` environment variable on this
+server (see ``_resolve_gemini_api_key``); a request that still supplies one
+directly is honored instead. Either way it is passed straight through to the
+pipeline in-memory for that one job and is never written to a job record or
+echoed back in any response.
 """
 
 import base64
@@ -73,6 +75,16 @@ from ppt2course.visual_analyzer import (
     analyze_visual_needs,
     suggest_broll_window_ms,
 )
+
+# The frontend no longer asks the user for a Gemini API key -- it's expected
+# to be configured once as a server environment variable instead. A request
+# that does still pass one (older clients, direct API use) is honored as-is.
+DEFAULT_GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+
+
+def _resolve_gemini_api_key(provided: str | None) -> str | None:
+    return provided or DEFAULT_GEMINI_API_KEY
+
 
 DEFAULT_DATA_ROOT = os.environ.get("PPT2COURSE_DATA_ROOT", "data/jobs")
 # src/ppt2course/server.py -> parents[2] is the project root, where `frontend/` lives.
@@ -199,6 +211,7 @@ def create_app(
             mode = ScriptMode[script_mode]
         except KeyError:
             raise HTTPException(status_code=400, detail=f"invalid script_mode: {script_mode}")
+        gemini_api_key = _resolve_gemini_api_key(gemini_api_key)
 
         if logo_position not in LOGO_POSITIONS:
             raise HTTPException(
@@ -451,7 +464,7 @@ def create_app(
     async def generate_script_preview(
         pptx: UploadFile = File(...),
         script_mode: str = Form(...),
-        gemini_api_key: str = Form(...),
+        gemini_api_key: str | None = Form(None),
         gemini_model: str = Form(DEFAULT_GEMINI_MODEL),
         texts: str | None = Form(None),
     ):
@@ -459,6 +472,7 @@ def create_app(
         # so the user can see what the AI actually wrote and choose to
         # continue (or fix it) before ever submitting a job. The key is used
         # for this one call and never written anywhere or echoed back.
+        gemini_api_key = _resolve_gemini_api_key(gemini_api_key)
         try:
             mode = ScriptMode[script_mode]
         except KeyError:
@@ -507,6 +521,7 @@ def create_app(
         # any job's video/subtitle timing, only suggest slides that might
         # benefit from an added visual (and where, see
         # _suggest_broll_timing below).
+        gemini_api_key = _resolve_gemini_api_key(gemini_api_key)
         scripts = json.loads(texts)
 
         with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as tmp:

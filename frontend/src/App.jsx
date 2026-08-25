@@ -194,13 +194,15 @@ function toAbsoluteUrl(path) {
   return resolveDownloadUrl(path, window.location.hostname, window.location.origin);
 }
 
+// AI 視覺素材（VisualsStep）步驟先隱藏：拿掉這裡的 STEPS 項目、下面
+// currentStep === 5 的 VisualsStep 區塊改回來，就能恢復——元件與相關
+// state/邏輯都還留著沒刪。
 const STEPS = [
   { n: 1, key: "upload", label: "上傳投影片" },
   { n: 2, key: "script", label: "講稿來源" },
   { n: 3, key: "voice", label: "語音與轉場" },
   { n: 4, key: "extras", label: "進階選項" },
-  { n: 5, key: "visuals", label: "AI 視覺素材" },
-  { n: 6, key: "review", label: "開始製作" },
+  { n: 5, key: "review", label: "開始製作" },
 ];
 
 // Note: no client-side default start/duration constant here anymore — each
@@ -232,7 +234,7 @@ function App() {
   const [imageFiles, setImageFiles] = useState([]);
   const [baseName, setBaseName] = useState("課程");
   const [scriptMode, setScriptMode] = useState("OWN");
-  const [textInputMode, setTextInputMode] = useState("perSlide");
+  const [textInputMode, setTextInputMode] = useState("paste");
   const [perSlideTexts, setPerSlideTexts] = useState([]);
   const [pasteText, setPasteText] = useState("");
   const [pasteError, setPasteError] = useState(null);
@@ -569,8 +571,6 @@ function App() {
       return null;
     }
     if (step === 2) {
-      if (modeConfig.needsApiKey && !geminiApiKey.trim()) return "此模式需要 Gemini API Key";
-
       if (scriptMode === "POLISH") {
         if (textInputMode === "paste") {
           if (!pasteText.trim()) return "請貼上包含頁碼標記的講稿草稿";
@@ -775,8 +775,6 @@ function App() {
                 scriptMode={scriptMode}
                 setScriptMode={setScriptMode}
                 modeConfig={modeConfig}
-                geminiApiKey={geminiApiKey}
-                setGeminiApiKey={setGeminiApiKey}
                 textInputMode={textInputMode}
                 setTextInputMode={setTextInputMode}
                 perSlideTexts={perSlideTexts}
@@ -854,26 +852,9 @@ function App() {
               />
             )}
 
-            {currentStep === 5 && (
-              <VisualsStep
-                slideCount={imageFiles.length}
-                thumbUrls={thumbUrls}
-                onAnalyze={handleAnalyzeVisuals}
-                canAnalyze={Boolean(pptxFile) && resolveCurrentTexts() !== null}
-                analysisStatus={visualAnalysisStatus}
-                analysisError={visualAnalysisError}
-                recommendations={visualRecommendations}
-                analysisWarnings={visualAnalysisWarnings}
-                pexelsApiKey={pexelsApiKey}
-                setPexelsApiKey={setPexelsApiKey}
-                mediaSearchBySlide={mediaSearchBySlide}
-                onSearchMedia={handleSearchMedia}
-                brollChoices={brollChoices}
-                setBrollChoices={setBrollChoices}
-              />
-            )}
+            {/* AI 視覺素材（VisualsStep）先隱藏，見上方 STEPS 註解 */}
 
-            {currentStep === 6 && (
+            {currentStep === 5 && (
               <ReviewStep
                 baseName={baseName}
                 slideCount={imageFiles.length}
@@ -1163,8 +1144,6 @@ function ScriptStep({
   scriptMode,
   setScriptMode,
   modeConfig,
-  geminiApiKey,
-  setGeminiApiKey,
   textInputMode,
   setTextInputMode,
   perSlideTexts,
@@ -1209,29 +1188,10 @@ function ScriptStep({
           </div>
         </div>
 
-        {modeConfig.needsApiKey && (
-          <div className="field full">
-            <label htmlFor="gemini-key-input">
-              Gemini API Key <FieldTag required />{" "}
-              <span className="hint">— 只用於這次任務，不會被儲存</span>
-            </label>
-            <input
-              id="gemini-key-input"
-              type="password"
-              value={geminiApiKey}
-              onChange={(e) => setGeminiApiKey(e.target.value)}
-              placeholder="貼上你的 Gemini API Key"
-            />
-            <a href={GEMINI_API_KEY_URL} target="_blank" rel="noreferrer" className="hint-link">
-              還沒有 Gemini API Key？點此免費申請 →
-            </a>
-          </div>
-        )}
-
         {scriptMode === "NOTES" && (
           <div className="field full">
             <label>
-              備忘稿預覽 <span className="hint">— 這就是每一頁實際會唸出來的內容，唸稿前先確認有沒有寫錯</span>
+              備忘稿預覽 <span className="hint">— 每頁實際會唸出來的內容，唸前請先確認</span>
             </label>
 
             {pptxNotesStatus === "loading" && (
@@ -1254,7 +1214,7 @@ function ScriptStep({
                 </div>
                 {emptyNotesCount > 0 && (
                   <p className="form-error" style={{ margin: "8px 0 0" }}>
-                    有 {emptyNotesCount} 頁沒有寫備忘稿，這幾頁在影片裡會是靜音畫面。若不是故意的，請回去 PowerPoint 補上備忘稿後重新上傳。
+                    有 {emptyNotesCount} 頁沒有備忘稿，會是靜音畫面；如需修正請回 PowerPoint 補上後重新上傳。
                   </p>
                 )}
               </>
@@ -1270,7 +1230,7 @@ function ScriptStep({
           <GenerateScriptButton
             label="產生 AI 講稿預覽"
             loadingLabel="AI 生成中，請稍候..."
-            disabled={!geminiApiKey.trim() || scriptPreviewStatus === "loading"}
+            disabled={scriptPreviewStatus === "loading"}
             status={scriptPreviewStatus}
             error={scriptPreviewError}
             onClick={onGeneratePreview}
@@ -1299,20 +1259,20 @@ function ScriptStep({
               <button
                 type="button"
                 role="tab"
-                aria-selected={textInputMode === "perSlide"}
-                className={"tab" + (textInputMode === "perSlide" ? " selected" : "")}
-                onClick={() => setTextInputMode("perSlide")}
-              >
-                逐頁輸入
-              </button>
-              <button
-                type="button"
-                role="tab"
                 aria-selected={textInputMode === "paste"}
                 className={"tab" + (textInputMode === "paste" ? " selected" : "")}
                 onClick={() => setTextInputMode("paste")}
               >
                 整段貼上自動分頁
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={textInputMode === "perSlide"}
+                className={"tab" + (textInputMode === "perSlide" ? " selected" : "")}
+                onClick={() => setTextInputMode("perSlide")}
+              >
+                逐頁輸入
               </button>
             </div>
 
@@ -1326,7 +1286,7 @@ function ScriptStep({
               <div className="field">
                 <label htmlFor="paste-script-input">
                   <span className="hint">
-                    用「第1頁」「第一頁」這樣的標記分開每一頁講稿，系統會自動依標記分頁
+                    用「第1頁」「第一頁」標記分頁，系統自動辨識
                   </span>
                 </label>
 
@@ -1359,7 +1319,7 @@ function ScriptStep({
           <GenerateScriptButton
             label={scriptPreviewStatus === "done" ? "重新產生 AI 潤飾預覽" : "產生 AI 潤飾預覽"}
             loadingLabel="AI 潤飾中，請稍候..."
-            disabled={!geminiApiKey.trim() || !hasDraftText || scriptPreviewStatus === "loading"}
+            disabled={!hasDraftText || scriptPreviewStatus === "loading"}
             status={scriptPreviewStatus}
             error={scriptPreviewError}
             onClick={onGeneratePreview}
@@ -1369,7 +1329,7 @@ function ScriptStep({
         {usesAiGeneration && scriptPreviewStatus === "done" && (
           <div className="field full">
             <p className="status-caption">
-              ✓ 已產生預覽，可直接修改上方文字，確認沒問題後按「下一步」繼續
+              ✓ 已產生預覽，可修改後按「下一步」繼續
             </p>
           </div>
         )}
@@ -1592,7 +1552,7 @@ function ExtrasStep({
             </select>
           ) : (
             <p className="hint" style={{ margin: 0 }}>
-              先在 Step 01 上傳投影片圖片，這裡就能用實際畫面預覽字幕與 Logo。
+              先在 Step 01 上傳投影片圖片，才能預覽字幕與 Logo。
             </p>
           )}
 
@@ -1633,7 +1593,7 @@ function ExtrasStep({
           </div>
           <p className="hint" style={{ margin: "6px 0 0" }}>
             {previewImageUrl
-              ? "字幕與 Logo 的大小、位置、顏色皆按實際畫面比例預覽，展開下方各選項即可即時看到變化"
+              ? "字幕與 Logo 皆按實際畫面比例即時預覽"
               : "尚未有可預覽的頁面"}
           </p>
         </div>
@@ -1726,7 +1686,7 @@ function ExtrasStep({
               placeholder={"每行一個詞，例如公司名稱或專業術語：\n普拉斯提亞雲端\n職場健康促進計畫"}
             />
             <p className="hint" style={{ margin: "6px 0 0" }}>
-              讓字幕換行辨識這些詞，不會把它們從中間拆成兩行；不影響配音發音。
+              讓字幕換行時不拆開這些詞；不影響發音。
             </p>
           </div>
         </CollapsibleField>
@@ -1823,7 +1783,7 @@ function PacingField({
   return (
     <>
       <p className="hint" style={{ margin: "0 0 8px" }}>
-        只會延長畫面停留（必要時加上靜音），不會改變任何一句旁白配音本身的長度或語速。
+        只延長畫面停留（必要時加靜音），不改變旁白配音長度或語速。
       </p>
 
       <label className="pacing-toggle">
@@ -1850,7 +1810,7 @@ function PacingField({
             onChange={(e) => setTargetDurationSec(Number(e.target.value))}
           />
           <p className="hint" style={{ margin: "6px 0 0" }}>
-            系統會把每一頁的閱讀停頓平均分配以貼近這個長度；如果旁白本身總長已經超過目標，會停在旁白最短能到的長度，絕不會加快語速或剪短配音。
+            系統會平均分配每頁停頓以貼近此長度；若旁白總長已超過目標，則維持旁白原長，不會加快語速或剪短配音。
           </p>
         </div>
       ) : (
@@ -1896,7 +1856,7 @@ function PacingField({
       </label>
       {avoidVoiceOverlap && (
         <p className="hint" style={{ margin: "6px 0 0" }}>
-          畫面轉場動畫照舊播放，但下一頁的旁白會等上一頁完全講完（含閱讀停頓）才開始出聲；整支影片的總長度會因此變長，不會再因為轉場而縮短。
+          轉場動畫照常播放，但下一頁旁白會等上一頁講完才出聲；總長度會因此變長。
         </p>
       )}
     </>
@@ -1995,7 +1955,7 @@ function SubtitleColorField({
         )}
       </div>
       <p className="hint" style={{ margin: "6px 0 0" }}>
-        上方的字幕預覽會同步套用這裡選的顏色與粗細。粗體只有開/關兩種，不是連續的粗細刻度——這是字幕格式（ASS/libass）本身的限制。
+        上方預覽會同步套用顏色與粗細。粗體僅開/關兩種，無漸層刻度。
       </p>
     </div>
   );
@@ -2219,8 +2179,8 @@ function VisualsStep({
       <div className="field-grid">
         <div className="field full">
           <p className="hint">
-            AI 會分析每一頁的內容，建議哪些頁面加入額外圖片能提升理解——只有你確認選用的素材才會真的出現在影片裡。
-            這個功能完全選填，時間也不會超出該頁旁白本身的長度，不會影響配音與字幕的時間軸。
+            AI 會分析每頁內容，建議加入額外圖片的頁面；只有你確認選用才會出現在影片裡。
+            全部選填，時間不會超出該頁旁白長度。
           </p>
         </div>
 
@@ -2229,7 +2189,7 @@ function VisualsStep({
             Pexels API Key <FieldTag required={false} />
           </label>
           <p className="hint" style={{ margin: "0 0 8px" }}>
-            用來搜尋 Pexels 免費圖庫的素材縮圖。不填也沒關係，只是不能搜圖，不影響其他功能。
+            用來搜尋 Pexels 免費圖庫縮圖；留空則無法搜圖，不影響其他功能。
           </p>
           <input
             id="pexels-key-input"
@@ -2245,7 +2205,7 @@ function VisualsStep({
 
         <GenerateScriptButton
           label={analysisStatus === "done" ? "重新分析視覺素材建議" : "分析 PPT 並產生視覺建議"}
-          loadingLabel="AI 分析中，請稍候（會為建議頁面合成語音以抓取最適合的出現時間，可能需要一些時間）..."
+          loadingLabel="AI 分析中，請稍候（需合成語音抓取最適合時間，較費時）..."
           disabled={!canAnalyze || analysisStatus === "loading"}
           status={analysisStatus}
           error={analysisError}
@@ -2270,7 +2230,7 @@ function VisualsStep({
 
         {analysisStatus === "done" && recommended.length === 0 && (
           <div className="field full">
-            <p className="status-caption">AI 判斷目前每一頁的內容都不需要額外視覺素材，可以直接進入下一步。</p>
+            <p className="status-caption">AI 判斷目前頁面都不需要額外視覺素材，可直接進入下一步。</p>
           </div>
         )}
 
@@ -2397,7 +2357,7 @@ function VisualRecommendationCard({
                 />
               </label>
               <span className="hint">
-                時間已依 AI 判斷旁白最相關的位置自動帶入，可自行調整；實際秒數仍會依該頁旁白長度自動裁切，不會超出旁白範圍
+                時間已依 AI 判斷自動帶入，可自行調整；仍會依旁白長度自動裁切，不超出範圍
               </span>
             </div>
           )}
