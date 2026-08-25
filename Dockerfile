@@ -33,12 +33,7 @@ RUN pip install --no-cache-dir .
 # only returns the downloaded binaries' paths -- symlink them onto PATH so
 # every existing `subprocess.run(["ffmpeg", ...])`/`["ffprobe", ...])` call
 # in this codebase keeps working unchanged.
-RUN python -c "\
-from static_ffmpeg.run import get_or_fetch_platform_executables_else_raise; \
-import os; \
-ffmpeg_path, ffprobe_path = get_or_fetch_platform_executables_else_raise(); \
-os.symlink(ffmpeg_path, '/usr/local/bin/ffmpeg'); \
-os.symlink(ffprobe_path, '/usr/local/bin/ffprobe')" \
+RUN python -c "import os; from static_ffmpeg.run import get_or_fetch_platform_executables_else_raise; ffmpeg_path, ffprobe_path = get_or_fetch_platform_executables_else_raise(); os.symlink(ffmpeg_path, '/usr/local/bin/ffmpeg'); os.symlink(ffprobe_path, '/usr/local/bin/ffprobe')" \
     && ffmpeg -version && ffprobe -version
 
 COPY --from=frontend-build /app/frontend/dist ./frontend/dist
