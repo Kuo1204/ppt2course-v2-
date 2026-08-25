@@ -191,7 +191,15 @@ function formatGenerationSeconds(seconds) {
 }
 
 function toAbsoluteUrl(path) {
-  return resolveDownloadUrl(path, window.location.hostname, window.location.origin);
+  // Resolve against the *directory* of the current page URL, not just the
+  // origin -- this service is deployed under a per-account path prefix
+  // (https://.../<account>/<project>/) that a plain origin base would drop,
+  // sending phones that scan the QR code to the platform's domain root
+  // instead of back into this service. `path` must be a relative reference
+  // (no leading slash) for this to resolve correctly; an already-absolute
+  // dev-mode URL (baked-in localhost origin) still passes through resolveDownloadUrl's own logic unaffected.
+  const currentDirBase = new URL(".", window.location.href).href;
+  return resolveDownloadUrl(path, window.location.hostname, currentDirBase);
 }
 
 // AI 視覺素材（VisualsStep）步驟先隱藏：拿掉這裡的 STEPS 項目、下面
@@ -2579,7 +2587,7 @@ function MobileDownloadQr({ jobId }) {
   // a QR scanner's in-app browser silently triggers-and-abandons a direct
   // attachment download (blank tab, no confirmation). /share gives the
   // phone something to land on and choose preview or download from.
-  const absoluteUrl = toAbsoluteUrl(`/share/${jobId}`);
+  const absoluteUrl = toAbsoluteUrl(`share/${jobId}`);
 
   useEffect(() => {
     if (!canvasRef.current) return;

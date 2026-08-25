@@ -258,6 +258,12 @@ def create_app(
             ) from None
 
         job_id = uuid.uuid4().hex
+        print(
+            f"[server] create_job job={job_id} slides={len(images)} script_mode={script_mode} "
+            f"voice={voice} resolution={resolution_width}x{resolution_height} "
+            f"has_gemini_key={bool(gemini_api_key)}",
+            flush=True,
+        )
         job_root = os.path.join(data_root, job_id)
         uploads_dir = os.path.join(job_root, "uploads")
         work_dir = os.path.join(job_root, "work")
@@ -347,8 +353,15 @@ def create_app(
                 generation_seconds = round(job.completed_at - job.started_at, 1)
             return {
                 "status": "done",
+                # Relative (no leading slash) so the browser resolves it
+                # against the current page URL, prefix included -- this
+                # service is deployed behind a reverse proxy that mounts it
+                # under a per-account path prefix and strips that prefix
+                # before forwarding here. An absolute "/api/..." path would
+                # skip past the prefix and hit the proxy's own domain root
+                # instead of this service.
                 "downloads": {
-                    filetype: f"/api/jobs/{job_id}/download/{filetype}"
+                    filetype: f"api/jobs/{job_id}/download/{filetype}"
                     for filetype in job.result
                     if filetype in ALLOWED_DOWNLOAD_TYPES
                 },
@@ -681,21 +694,29 @@ def _share_page_shell(body: str) -> str:
 
 
 def _render_share_page_done(job_id: str, result: dict) -> str:
+    # "../api/..." (relative, one level up): this page is itself served
+    # under the platform's per-account path prefix at .../share/{job_id},
+    # and that prefix is stripped before the request reaches this container.
+    # A same-level relative path ("api/...") would resolve *inside*
+    # ".../share/", not back up to ".../api/...". Going up one level lands
+    # on the right place under whatever prefix this happens to be deployed
+    # at. A leading "/api/..." would instead jump straight to the proxy's
+    # domain root, skipping the prefix entirely.
     video_html = (
         f'<video controls playsinline preload="metadata" '
-        f'src="/api/jobs/{job_id}/view/mp4"></video>'
+        f'src="../api/jobs/{job_id}/view/mp4"></video>'
         if "mp4" in result
         else ""
     )
     buttons = []
     if "mp4" in result:
         buttons.append(
-            f'<a class="btn btn-primary" href="/api/jobs/{job_id}/download/mp4" download>下載影片</a>'
+            f'<a class="btn btn-primary" href="../api/jobs/{job_id}/download/mp4" download>下載影片</a>'
         )
     for filetype in ("srt", "docx"):
         if filetype in result:
             buttons.append(
-                f'<a class="btn btn-secondary" href="/api/jobs/{job_id}/download/{filetype}" download>'
+                f'<a class="btn btn-secondary" href="../api/jobs/{job_id}/download/{filetype}" download>'
                 f"下載{_SHARE_PAGE_LABELS[filetype]}</a>"
             )
     return _share_page_shell(

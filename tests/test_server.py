@@ -599,9 +599,9 @@ def test_get_job_status_done_includes_download_links(tmp_path):
     body = response.json()
     assert body["status"] == "done"
     assert body["downloads"] == {
-        "mp4": f"/api/jobs/{job_id}/download/mp4",
-        "srt": f"/api/jobs/{job_id}/download/srt",
-        "docx": f"/api/jobs/{job_id}/download/docx",
+        "mp4": f"api/jobs/{job_id}/download/mp4",
+        "srt": f"api/jobs/{job_id}/download/srt",
+        "docx": f"api/jobs/{job_id}/download/docx",
     }
 
 

@@ -74,6 +74,7 @@ class JobManager:
         with self._lock:
             self._jobs[job_id] = job
         self._queue.put(job_id)
+        print(f"[jobs] submitted job={job_id} queue_size={self._queue.qsize()}", flush=True)
         return job_id
 
     def get(self, job_id: str) -> Job | None:
@@ -99,9 +100,11 @@ class JobManager:
             job.started_at = time.time()
             kwargs = job.kwargs
 
+        print(f"[jobs] processing job={job_id}", flush=True)
         try:
             result = self._pipeline_fn(**kwargs)
         except PipelineError as exc:
+            print(f"[jobs] job={job_id} failed (pipeline error): {exc}", flush=True)
             with self._lock:
                 job.status = JobStatus.ERROR
                 job.error = str(exc)
@@ -117,12 +120,14 @@ class JobManager:
             # out to be: not a slow render, but a dead worker thread from an
             # earlier job's unhandled exception. This is the last-resort net
             # so one bad job can only ever fail itself, never the queue.
+            print(f"[jobs] job={job_id} failed (unexpected error): {exc!r}", flush=True)
             with self._lock:
                 job.status = JobStatus.ERROR
                 job.error = f"unexpected error: {exc}"
                 job.completed_at = time.time()
             return
 
+        print(f"[jobs] job={job_id} done", flush=True)
         with self._lock:
             job.status = JobStatus.DONE
             job.result = result
@@ -140,6 +145,8 @@ class JobManager:
             ]
             expired = [self._jobs.pop(job_id) for job_id in expired_ids]
 
+        if expired:
+            print(f"[jobs] cleaning up {len(expired)} expired job(s): {[j.id for j in expired]}", flush=True)
         for job in expired:
             shutil.rmtree(job.work_dir, ignore_errors=True)
             shutil.rmtree(job.out_dir, ignore_errors=True)

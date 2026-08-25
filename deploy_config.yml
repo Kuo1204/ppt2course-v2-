@@ -1,0 +1,14 @@
+persistent_storage: true
+env:
+  - key: GEMINI_API_KEY
+    label: Google Gemini API 金鑰
+    hint: 用於 AI 自動生成/潤飾講稿與 AI 視覺分析。到 Google AI Studio (aistudio.google.com) 的 API keys 頁面建立。若不需要 AI 生成講稿（只用「自行輸入」或「投影片備忘稿」模式）可留空。
+  - key: PEXELS_API_KEY
+    label: Pexels API 金鑰
+    hint: 用於「素材搜尋」功能到 Pexels 找免費圖片/影片。到 pexels.com/api 申請。不使用素材搜尋功能可留空。
+  - key: PPT2COURSE_BASIC_AUTH_USER
+    label: 額外的 HTTP Basic Auth 帳號（選填）
+    hint: 若想在平台既有的 SSO 登入之外，再加一層帳密保護，兩個欄位都填就會啟用；只填一個不會生效。
+  - key: PPT2COURSE_BASIC_AUTH_PASSWORD
+    label: 額外的 HTTP Basic Auth 密碼（選填）
+    hint: 搭配上面的帳號使用，兩者都填才會啟用。

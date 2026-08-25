@@ -239,22 +239,35 @@ def run_pipeline(
     target_duration_ms: int | None = None,
     avoid_voice_overlap: bool = False,
 ) -> dict[str, str | int]:
+    print(
+        f"[pipeline] start work_dir={work_dir} base_name={base_name} "
+        f"script_mode={script_mode} voice={voice} resolution={resolution}",
+        flush=True,
+    )
     try:
         slides = parse_ppt(pptx_path)
     except PptParseError as exc:
+        print(f"[pipeline] failed to parse PPT {pptx_path}: {exc}", flush=True)
         raise PipelineError(f"failed to parse PPT: {exc}") from exc
 
     if len(image_paths) != len(slides):
+        print(
+            f"[pipeline] image/slide count mismatch: images={len(image_paths)} slides={len(slides)}",
+            flush=True,
+        )
         raise PipelineError(
             f"image count ({len(image_paths)}) does not match slide count ({len(slides)})"
         )
 
+    print(f"[pipeline] parsed {len(slides)} slides, generating script (model={gemini_model})", flush=True)
     try:
         scripts = generate_script(
             script_mode, slides, texts=texts, api_key=gemini_api_key, model=gemini_model
         )
     except ScriptGenerationError as exc:
+        print(f"[pipeline] script generation failed: {exc}", flush=True)
         raise PipelineError(f"script generation failed: {exc}") from exc
+    print(f"[pipeline] script generated for {len(scripts)} slides", flush=True)
 
     cleaned_scripts = [clean_script(s) for s in scripts]
 
@@ -336,6 +349,7 @@ def run_pipeline(
     video_path = os.path.join(work_dir, "course.mp4")
     srt_path = os.path.join(work_dir, "course.srt")
 
+    print(f"[pipeline] composing video -> {video_path}", flush=True)
     try:
         compose_video(
             slide_inputs,
@@ -366,11 +380,14 @@ def run_pipeline(
             avoid_voice_overlap=avoid_voice_overlap,
         )
     except VideoComposeError as exc:
+        print(f"[pipeline] video composition failed: {exc}", flush=True)
         raise PipelineError(f"video composition failed: {exc}") from exc
+    print("[pipeline] video composed, exporting outputs", flush=True)
 
     try:
         outputs = export_outputs(video_path, srt_path, cleaned_scripts, out_dir, base_name)
     except ExportError as exc:
+        print(f"[pipeline] export failed: {exc}", flush=True)
         raise PipelineError(f"export failed: {exc}") from exc
 
     # Surfaced on the results screen ("影片容量/時長/講稿字數") once the job
@@ -385,4 +402,9 @@ def run_pipeline(
         # is then the shortest this deck can honestly get without cutting
         # into narration audio, not the requested target.
         outputs["target_duration_reachable"] = target_duration_reachable
+    print(
+        f"[pipeline] done work_dir={work_dir} video_bytes={outputs.get('video_size_bytes')} "
+        f"video_ms={outputs.get('video_duration_ms')}",
+        flush=True,
+    )
     return outputs

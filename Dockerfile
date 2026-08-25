@@ -25,9 +25,12 @@ RUN pip install --no-cache-dir .
 
 COPY --from=frontend-build /app/frontend/dist ./frontend/dist
 
+# PPT2COURSE_DATA_ROOT points at /opt/appdata -- the platform's persistent
+# storage mount (declared via deploy_config.yml's persistent_storage: true)
+# -- so uploaded decks and rendered videos survive a redeploy instead of
+# being reset to whatever was last committed to the repo.
 ENV PPT2COURSE_FRONTEND_DIST=/app/frontend/dist \
-    PPT2COURSE_DATA_ROOT=/data/jobs
-VOLUME ["/data/jobs"]
+    PPT2COURSE_DATA_ROOT=/opt/appdata/jobs
 
 EXPOSE 8000
 CMD ["uvicorn", "ppt2course.server:app", "--host", "0.0.0.0", "--port", "8000"]
