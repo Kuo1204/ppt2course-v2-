@@ -452,7 +452,12 @@ def create_app(
             pptx_path = tmp.name
         try:
             try:
-                thumbnails = render_pptx_thumbnails(pptx_path, thumbnail_width=DEFAULT_THUMBNAIL_WIDTH)
+                # CPU-bound (draws every shape with PyMuPDF) -- offload so a
+                # slow/large deck doesn't block the single event loop other
+                # requests (including other users) are waiting on.
+                thumbnails = await run_in_threadpool(
+                    render_pptx_thumbnails, pptx_path, thumbnail_width=DEFAULT_THUMBNAIL_WIDTH
+                )
             except PptxPreviewError as exc:
                 raise HTTPException(status_code=502, detail=f"failed to render PPTX preview: {exc}") from exc
         finally:
@@ -522,8 +527,20 @@ def create_app(
             os.unlink(pptx_path)
 
         try:
-            generated_texts = generate_script(
-                mode, slides, texts=parsed_texts, api_key=gemini_api_key, model=gemini_model
+            # generate_script() makes blocking, synchronous calls out to
+            # Gemini (one per slide, now run concurrently inside
+            # generate_script itself -- see script_gen.py) -- offload the
+            # whole thing to a thread so it doesn't block this single-worker
+            # event loop for the whole duration, which previously stalled
+            # every other in-flight request (including unrelated users) for
+            # as long as this call took.
+            generated_texts = await run_in_threadpool(
+                generate_script,
+                mode,
+                slides,
+                texts=parsed_texts,
+                api_key=gemini_api_key,
+                model=gemini_model,
             )
         except ScriptGenerationError as exc:
             raise HTTPException(status_code=502, detail=f"script generation failed: {exc}") from exc
@@ -566,7 +583,11 @@ def create_app(
                 detail=f"texts length ({len(scripts)}) does not match slide count ({len(slides)})",
             )
 
-        result = analyze_visual_needs(slides, scripts, api_key=gemini_api_key, model=gemini_model)
+        # Same reason as /api/generate-script above -- this can make a
+        # blocking Gemini call and must not block the event loop.
+        result = await run_in_threadpool(
+            analyze_visual_needs, slides, scripts, api_key=gemini_api_key, model=gemini_model
+        )
 
         # Keyed by slide_number rather than zipped by position — safer than
         # assuming result.recommendations comes back in the same order as

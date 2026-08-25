@@ -8,6 +8,7 @@ network.
 
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from enum import Enum, auto
 
 from google import genai
@@ -16,6 +17,17 @@ from ppt2course.upload import SlideContent
 
 DEFAULT_GEMINI_MODEL = "gemini-flash-latest"
 MAX_RETRIES = 5
+
+# AUTO/POLISH used to call Gemini once per slide *sequentially* -- for an
+# N-slide deck that's N calls (each with its own up-to-5-attempt retry/backoff
+# on top) all on one request's clock. A 10+ slide deck routinely pushed total
+# wall-clock past the platform's front-door gateway timeout, which then
+# returned the client a 504 while this call was still running server-side
+# (visible in the container's own log a bit later as a mismatched 502 once
+# the still-running call finally gave up). Running every slide's call
+# concurrently instead cuts total wall-clock from "sum of all slides" to
+# roughly "the slowest single slide" (plus whatever backoff that one hits).
+_MAX_CONCURRENT_GEMINI_CALLS = 8
 
 
 class ScriptMode(Enum):
@@ -142,21 +154,32 @@ def _call_gemini(
     raise ScriptGenerationError(f"Gemini API call failed: {last_error}") from last_error
 
 
+def _run_concurrently(prompts: list[str], api_key: str, model: str) -> list[str]:
+    """Runs one `_call_gemini` per prompt concurrently (bounded thread pool)
+    and returns results in the same order as `prompts` -- order matters here
+    because callers zip the result back up against `slides`/`texts` by
+    position. The first exception raised by any slide is what's raised to
+    the caller (via `Future.result()`), same as the old sequential loop would
+    have raised on the first failing slide -- just without waiting for every
+    earlier slide to finish first."""
+    with ThreadPoolExecutor(max_workers=min(_MAX_CONCURRENT_GEMINI_CALLS, len(prompts))) as pool:
+        futures = [pool.submit(_call_gemini, prompt, api_key, model) for prompt in prompts]
+        return [future.result() for future in futures]
+
+
 def _generate_auto(
     slides: list[SlideContent], api_key: str | None, model: str
 ) -> list[str]:
     if not api_key:
         raise ScriptGenerationError("api_key is required for ScriptMode.AUTO")
 
-    results = []
-    for slide in slides:
-        prompt = _AUTO_PROMPT_TEMPLATE.format(content=slide.text)
-        text = _call_gemini(prompt, api_key, model)
+    prompts = [_AUTO_PROMPT_TEMPLATE.format(content=slide.text) for slide in slides]
+    results = _run_concurrently(prompts, api_key, model)
+    for slide, text in zip(slides, results):
         if not text.strip():
             raise ScriptGenerationError(
                 f"Gemini returned an empty script for slide index {slide.index}"
             )
-        results.append(text)
     return results
 
 
@@ -175,19 +198,19 @@ def _generate_polish(
             f"texts length ({len(texts)}) does not match slide count ({len(slides)})"
         )
 
-    results = []
     for slide, text in zip(slides, texts):
         if not text.strip():
             raise ScriptGenerationError(
                 f"POLISH does not allow empty input text (slide index {slide.index})"
             )
-        prompt = _POLISH_PROMPT_TEMPLATE.format(content=text)
-        polished = _call_gemini(prompt, api_key, model)
+
+    prompts = [_POLISH_PROMPT_TEMPLATE.format(content=text) for text in texts]
+    results = _run_concurrently(prompts, api_key, model)
+    for slide, polished in zip(slides, results):
         if not polished.strip():
             raise ScriptGenerationError(
                 f"Gemini returned an empty polished script for slide index {slide.index}"
             )
-        results.append(polished)
     return results
 
 
