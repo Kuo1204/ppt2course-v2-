@@ -159,14 +159,20 @@ def test_jobs_process_in_fifo_order():
 
 
 def test_cleanup_expired_deletes_old_completed_job_dirs(tmp_path):
-    work_dir = tmp_path / "work"
-    out_dir = tmp_path / "out"
-    work_dir.mkdir()
+    job_root = tmp_path / "job"
+    work_dir = job_root / "work"
+    out_dir = job_root / "out"
+    uploads_dir = job_root / "uploads"
+    work_dir.mkdir(parents=True)
     out_dir.mkdir()
+    uploads_dir.mkdir()
+    (uploads_dir / "deck.pptx").write_bytes(b"private upload")
     (out_dir / "課程.mp4").write_bytes(b"fake")
 
     manager = _make_manager(pipeline_fn=lambda **kwargs: {"mp4": str(out_dir / "課程.mp4")}, retention_seconds=3600)
-    job_id = manager.submit(work_dir=str(work_dir), out_dir=str(out_dir))
+    job_id = manager.submit(
+        job_root=str(job_root), work_dir=str(work_dir), out_dir=str(out_dir)
+    )
     manager.process_next()
 
     future = time.time() + 7200
@@ -175,6 +181,8 @@ def test_cleanup_expired_deletes_old_completed_job_dirs(tmp_path):
     assert manager.get(job_id) is None
     assert not work_dir.exists()
     assert not out_dir.exists()
+    assert not uploads_dir.exists()
+    assert not job_root.exists()
 
 
 def test_cleanup_expired_keeps_jobs_within_retention_window(tmp_path):

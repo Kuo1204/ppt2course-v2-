@@ -973,7 +973,13 @@ def _run_ffmpeg(cmd: list[str], step_description: str) -> None:
     for attempt in range(1, _LAUNCH_RETRY_ATTEMPTS + 1):
         try:
             result = subprocess.run(
-                cmd, capture_output=True, text=True, cwd=cwd, close_fds=False
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                cwd=cwd,
+                close_fds=False,
             )
             break
         except OSError as exc:

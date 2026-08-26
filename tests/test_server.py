@@ -328,7 +328,7 @@ def test_create_job_downloads_and_forwards_broll_selection(tmp_path):
 
     client, manager = _make_client(fake_pipeline, tmp_path)
     selections = json.dumps(
-        [{"slide_number": 1, "download_url": "https://example.com/a.jpg", "start_ms": 100, "end_ms": 500}]
+        [{"slide_number": 1, "download_url": "https://images.pexels.com/a.jpg", "start_ms": 100, "end_ms": 500}]
     )
     with patch("ppt2course.server.urlopen") as mock_urlopen:
         mock_urlopen.return_value.__enter__.return_value.read.return_value = b"fake-jpeg-bytes"
@@ -357,7 +357,7 @@ def test_create_job_skips_broll_selection_when_download_fails(tmp_path):
 
     client, manager = _make_client(fake_pipeline, tmp_path)
     selections = json.dumps(
-        [{"slide_number": 1, "download_url": "https://example.com/a.jpg", "start_ms": 100, "end_ms": 500}]
+        [{"slide_number": 1, "download_url": "https://images.pexels.com/a.jpg", "start_ms": 100, "end_ms": 500}]
     )
     with patch("ppt2course.server.urlopen", side_effect=OSError("network error")):
         response = client.post(
@@ -388,6 +388,50 @@ def test_create_job_skips_malformed_broll_selection(tmp_path):
 
     assert response.status_code == 200
     assert calls[0]["broll_selections"] == []
+
+
+def test_create_job_rejects_non_pexels_broll_url_without_requesting_it(tmp_path):
+    calls = []
+    client, manager = _make_client(lambda **kwargs: calls.append(kwargs) or {}, tmp_path)
+    selections = json.dumps(
+        [{"slide_number": 1, "download_url": "http://127.0.0.1/private.jpg", "start_ms": 100, "end_ms": 500}]
+    )
+
+    with patch("ppt2course.server.urlopen") as mock_urlopen:
+        response = client.post(
+            "/api/jobs", data=_upload_form(broll_selections=selections), files=_upload_files()
+        )
+
+    manager.process_next()
+    assert response.status_code == 200
+    assert calls[0]["broll_selections"] == []
+    mock_urlopen.assert_not_called()
+
+
+def test_create_job_rejects_invalid_texts_json(tmp_path):
+    client, _ = _make_client(lambda **kwargs: {}, tmp_path)
+    response = client.post(
+        "/api/jobs", data=_upload_form(texts="not-json"), files=_upload_files()
+    )
+    assert response.status_code == 400
+    assert response.json()["detail"] == "texts must be valid JSON"
+
+
+def test_create_job_rejects_texts_that_are_not_string_array(tmp_path):
+    client, _ = _make_client(lambda **kwargs: {}, tmp_path)
+    response = client.post(
+        "/api/jobs", data=_upload_form(texts=json.dumps({"slide": "text"})), files=_upload_files()
+    )
+    assert response.status_code == 400
+
+
+def test_create_job_rejects_oversized_upload_and_removes_partial_file(tmp_path):
+    client, _ = _make_client(lambda **kwargs: {}, tmp_path)
+    with patch("ppt2course.server.MAX_UPLOAD_BYTES", 4):
+        response = client.post("/api/jobs", data=_upload_form(), files=_upload_files())
+
+    assert response.status_code == 413
+    assert list((tmp_path / "data").rglob("deck.pptx")) == []
 
 
 # ---- avatar_mode / avatar_position / avatar_size / avatar_custom_slides ----

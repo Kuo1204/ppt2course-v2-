@@ -23,6 +23,7 @@ from pathlib import Path
 # Basic Auth middleware) would otherwise silently shadow this one.
 from urllib.request import Request as UrllibRequest
 from urllib.request import urlopen
+from urllib.parse import urlparse
 
 import static_ffmpeg
 
@@ -97,6 +98,20 @@ def _resolve_gemini_api_key(provided: str | None) -> str | None:
     return provided or DEFAULT_GEMINI_API_KEY
 
 
+def _parse_texts_json(raw: str | None, *, required: bool = False) -> list[str] | None:
+    if not raw:
+        if required:
+            raise HTTPException(status_code=400, detail="texts is required")
+        return None
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="texts must be valid JSON") from None
+    if not isinstance(value, list) or not all(isinstance(text, str) for text in value):
+        raise HTTPException(status_code=400, detail="texts must be a JSON array of strings")
+    return value
+
+
 DEFAULT_DATA_ROOT = os.environ.get("PPT2COURSE_DATA_ROOT", "data/jobs")
 # src/ppt2course/server.py -> parents[2] is the project root, where `frontend/` lives.
 DEFAULT_FRONTEND_DIST = os.environ.get(
@@ -104,6 +119,15 @@ DEFAULT_FRONTEND_DIST = os.environ.get(
 )
 ALLOWED_DOWNLOAD_TYPES = {"mp4", "srt", "docx"}
 _HEX_COLOR_RE = re.compile(r"^#?[0-9a-fA-F]{6}$")
+MAX_UPLOAD_BYTES = int(os.environ.get("PPT2COURSE_MAX_UPLOAD_BYTES", 200 * 1024 * 1024))
+MAX_BROLL_BYTES = int(os.environ.get("PPT2COURSE_MAX_BROLL_BYTES", 25 * 1024 * 1024))
+UPLOAD_CHUNK_BYTES = 1024 * 1024
+ALLOWED_BROLL_HOSTS = {"images.pexels.com", "videos.pexels.com"}
+ALLOWED_BROLL_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".mp4"}
+ALLOWED_SLIDE_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+ALLOWED_TRANSITIONS = {
+    "fade", "dissolve", "wipeleft", "wiperight", "slideleft", "slideright", "circlecrop"
+}
 
 # The mobile-download QR code links to /share/{job_id}, which itself embeds
 # links to /download and /view. A phone's camera app / QR scanner typically
@@ -254,7 +278,26 @@ def create_app(
         if target_duration_ms is not None and target_duration_ms <= 0:
             raise HTTPException(status_code=400, detail="target_duration_ms must be > 0")
 
-        parsed_texts = json.loads(texts) if texts else None
+        if transition not in ALLOWED_TRANSITIONS:
+            raise HTTPException(status_code=400, detail=f"invalid transition: {transition}")
+        if not 0 <= transition_duration_ms <= 10_000:
+            raise HTTPException(status_code=400, detail="transition_duration_ms must be between 0 and 10000")
+        if not (320 <= resolution_width <= 3840 and 240 <= resolution_height <= 2160):
+            raise HTTPException(status_code=400, detail="resolution is outside the supported range")
+        if not 1 <= fps <= 60:
+            raise HTTPException(status_code=400, detail="fps must be between 1 and 60")
+        if not 8 <= font_size <= 300:
+            raise HTTPException(status_code=400, detail="font_size must be between 8 and 300")
+        if subtitle_margin_v < 0:
+            raise HTTPException(status_code=400, detail="subtitle_margin_v must be >= 0")
+        if logo_width <= 0 or logo_margin < 0:
+            raise HTTPException(status_code=400, detail="logo size and margin are invalid")
+        if not 0 <= logo_opacity <= 1:
+            raise HTTPException(status_code=400, detail="logo_opacity must be between 0 and 1")
+        if not 0 <= bgm_volume <= 1:
+            raise HTTPException(status_code=400, detail="bgm_volume must be between 0 and 1")
+
+        parsed_texts = _parse_texts_json(texts)
         try:
             parsed_avatar_custom_slides = (
                 json.loads(avatar_custom_slides) if avatar_custom_slides else []
@@ -282,13 +325,15 @@ def create_app(
         os.makedirs(uploads_dir, exist_ok=True)
 
         pptx_path = os.path.join(uploads_dir, "deck.pptx")
-        await _save_upload(pptx, pptx_path)
+        await _save_upload(pptx, pptx_path, allowed_extensions={".pptx"})
 
         image_paths = []
         for i, image in enumerate(images, start=1):
             ext = os.path.splitext(image.filename or "")[1] or ".png"
             image_path = os.path.join(uploads_dir, f"slide_{i:03d}{ext}")
-            await _save_upload(image, image_path)
+            await _save_upload(
+                image, image_path, allowed_extensions=ALLOWED_SLIDE_IMAGE_EXTENSIONS
+            )
             image_paths.append(image_path)
 
         logo_path = await _save_optional_upload(logo, uploads_dir, "logo")
@@ -307,6 +352,7 @@ def create_app(
         manager: JobManager = app.state.job_manager
         manager.submit(
             job_id=job_id,
+            job_root=job_root,
             pptx_path=pptx_path,
             image_paths=image_paths,
             work_dir=work_dir,
@@ -447,9 +493,7 @@ def create_app(
         # upload is written to disk only long enough for render_pptx_thumbnails
         # to read it, then deleted — nothing from this preview-only call
         # persists.
-        with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as tmp:
-            tmp.write(await pptx.read())
-            pptx_path = tmp.name
+        pptx_path = await _save_temporary_upload(pptx, suffix=".pptx")
         try:
             try:
                 # CPU-bound (draws every shape with PyMuPDF) -- offload so a
@@ -477,9 +521,7 @@ def create_app(
         # after the video is already rendered. Mirrors /api/pptx-preview's
         # ephemeral-tempfile pattern: nothing from this preview-only call
         # persists.
-        with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as tmp:
-            tmp.write(await pptx.read())
-            pptx_path = tmp.name
+        pptx_path = await _save_temporary_upload(pptx, suffix=".pptx")
         try:
             try:
                 slides = parse_ppt(pptx_path)
@@ -513,11 +555,9 @@ def create_app(
                 detail=f"script preview is only available for AUTO/POLISH, got {script_mode}",
             )
 
-        parsed_texts = json.loads(texts) if texts else None
+        parsed_texts = _parse_texts_json(texts)
 
-        with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as tmp:
-            tmp.write(await pptx.read())
-            pptx_path = tmp.name
+        pptx_path = await _save_temporary_upload(pptx, suffix=".pptx")
         try:
             try:
                 slides = parse_ppt(pptx_path)
@@ -564,11 +604,9 @@ def create_app(
         # benefit from an added visual (and where, see
         # _suggest_broll_timing below).
         gemini_api_key = _resolve_gemini_api_key(gemini_api_key)
-        scripts = json.loads(texts)
+        scripts = _parse_texts_json(texts, required=True)
 
-        with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as tmp:
-            tmp.write(await pptx.read())
-            pptx_path = tmp.name
+        pptx_path = await _save_temporary_upload(pptx, suffix=".pptx")
         try:
             try:
                 slides = parse_ppt(pptx_path)
@@ -845,14 +883,28 @@ def _download_broll_selections(raw_json: str | None, uploads_dir: str) -> list[d
         except (KeyError, TypeError, ValueError):
             continue
 
-        ext = os.path.splitext(download_url_value.split("?")[0])[1][:5] or ".jpg"
+        parsed_url = urlparse(download_url_value)
+        ext = os.path.splitext(parsed_url.path)[1].lower()
+        if (
+            parsed_url.scheme != "https"
+            or parsed_url.hostname not in ALLOWED_BROLL_HOSTS
+            or parsed_url.username is not None
+            or parsed_url.password is not None
+            or ext not in ALLOWED_BROLL_EXTENSIONS
+            or slide_number < 1
+            or start_ms < 0
+            or end_ms <= start_ms
+        ):
+            continue
         image_path = os.path.join(uploads_dir, f"broll_{slide_number}_{i}{ext}")
         try:
             request = UrllibRequest(
                 download_url_value, headers={"User-Agent": "PPT2Course-AI/0.1"}
             )
             with urlopen(request, timeout=15.0) as response:
-                data = response.read()
+                data = response.read(MAX_BROLL_BYTES + 1)
+            if len(data) > MAX_BROLL_BYTES:
+                continue
             with open(image_path, "wb") as f:
                 f.write(data)
         except Exception:
@@ -869,9 +921,39 @@ def _download_broll_selections(raw_json: str | None, uploads_dir: str) -> list[d
     return resolved
 
 
-async def _save_upload(upload: UploadFile, dest_path: str) -> None:
-    with open(dest_path, "wb") as f:
-        f.write(await upload.read())
+async def _save_upload(
+    upload: UploadFile,
+    dest_path: str,
+    *,
+    max_bytes: int | None = None,
+    allowed_extensions: set[str] | None = None,
+) -> None:
+    max_bytes = MAX_UPLOAD_BYTES if max_bytes is None else max_bytes
+    extension = os.path.splitext(upload.filename or "")[1].lower()
+    if allowed_extensions is not None and extension not in allowed_extensions:
+        raise HTTPException(status_code=400, detail=f"unsupported file type: {extension or '(none)'}")
+
+    written = 0
+    try:
+        with open(dest_path, "wb") as f:
+            while chunk := await upload.read(UPLOAD_CHUNK_BYTES):
+                written += len(chunk)
+                if written > max_bytes:
+                    raise HTTPException(status_code=413, detail="uploaded file is too large")
+                f.write(chunk)
+    except Exception:
+        try:
+            os.unlink(dest_path)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+async def _save_temporary_upload(upload: UploadFile, *, suffix: str) -> str:
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        path = tmp.name
+    await _save_upload(upload, path, allowed_extensions={suffix.lower()})
+    return path
 
 
 async def _save_optional_upload(upload: UploadFile | None, uploads_dir: str, base_name: str) -> str | None:

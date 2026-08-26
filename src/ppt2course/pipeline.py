@@ -190,7 +190,9 @@ def _generate_silent_audio(out_path: str, duration_ms: int) -> None:
         "-q:a", "9",
         out_path,
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = subprocess.run(
+        cmd, capture_output=True, text=True, encoding="utf-8", errors="replace"
+    )
     if result.returncode != 0:
         raise PipelineError(f"failed to generate silent placeholder audio: {result.stderr}")
 

@@ -35,6 +35,7 @@ class Job:
     created_at: float
     work_dir: str
     out_dir: str
+    job_root: str = ""
     started_at: float | None = None
     completed_at: float | None = None
     result: dict | None = None
@@ -61,7 +62,9 @@ class JobManager:
             threading.Thread(target=self._worker_loop, daemon=True).start()
             threading.Thread(target=self._cleanup_loop, daemon=True).start()
 
-    def submit(self, job_id: str | None = None, **pipeline_kwargs) -> str:
+    def submit(
+        self, job_id: str | None = None, job_root: str | None = None, **pipeline_kwargs
+    ) -> str:
         job_id = job_id if job_id is not None else uuid.uuid4().hex
         job = Job(
             id=job_id,
@@ -69,6 +72,7 @@ class JobManager:
             created_at=time.time(),
             work_dir=pipeline_kwargs.get("work_dir", ""),
             out_dir=pipeline_kwargs.get("out_dir", ""),
+            job_root=job_root or "",
             kwargs=pipeline_kwargs,
         )
         with self._lock:
@@ -148,8 +152,15 @@ class JobManager:
         if expired:
             print(f"[jobs] cleaning up {len(expired)} expired job(s): {[j.id for j in expired]}", flush=True)
         for job in expired:
-            shutil.rmtree(job.work_dir, ignore_errors=True)
-            shutil.rmtree(job.out_dir, ignore_errors=True)
+            if job.job_root:
+                # The root also contains uploads. Deleting only work/out left
+                # users' original decks and media behind indefinitely.
+                shutil.rmtree(job.job_root, ignore_errors=True)
+            else:
+                # Backwards-compatible fallback for callers/tests that submit
+                # jobs without a common root.
+                shutil.rmtree(job.work_dir, ignore_errors=True)
+                shutil.rmtree(job.out_dir, ignore_errors=True)
 
     def _worker_loop(self) -> None:
         while True:

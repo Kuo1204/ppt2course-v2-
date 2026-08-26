@@ -27,6 +27,8 @@ def get_audio_duration_ms(path: str, ffprobe_path: str = "ffprobe") -> int:
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
     except OSError as exc:
         raise AudioDurationError(f"failed to invoke ffprobe: {exc}") from exc
