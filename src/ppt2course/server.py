@@ -16,6 +16,8 @@ import os
 import re
 import secrets
 import tempfile
+import threading
+import time
 import uuid
 from dataclasses import asdict
 from pathlib import Path
@@ -39,11 +41,11 @@ from ppt2course.avatar import (
 )
 from ppt2course.jobs import JobManager, JobStatus
 from ppt2course.media_search import DEFAULT_CANDIDATE_LIMIT, search_pexels
+from ppt2course.preview_jobs import PreviewTaskManager
 from ppt2course.pptx_preview import DEFAULT_THUMBNAIL_WIDTH, PptxPreviewError, render_pptx_thumbnails
 from ppt2course.script_extract import ScriptExtractionError, extract_text_from_file
 from ppt2course.script_gen import (
     DEFAULT_GEMINI_MODEL,
-    ScriptGenerationError,
     ScriptMode,
     generate_script,
 )
@@ -178,6 +180,14 @@ def create_app(
     app.state.job_manager = job_manager if job_manager is not None else JobManager()
     app.state.data_root = data_root
     app.state.voice_preview_cache = {}
+    app.state.script_preview_jobs = PreviewTaskManager()
+
+    def _cleanup_preview_jobs_loop() -> None:
+        while True:
+            time.sleep(10 * 60)
+            app.state.script_preview_jobs.cleanup_expired()
+
+    threading.Thread(target=_cleanup_preview_jobs_loop, daemon=True).start()
 
     app.add_middleware(
         CORSMiddleware,
@@ -532,7 +542,7 @@ def create_app(
 
         return {"notes": [slide.notes for slide in slides]}
 
-    @app.post("/api/generate-script")
+    @app.post("/api/generate-script", status_code=202)
     async def generate_script_preview(
         pptx: UploadFile = File(...),
         script_mode: str = Form(...),
@@ -540,10 +550,12 @@ def create_app(
         gemini_model: str = Form(DEFAULT_GEMINI_MODEL),
         texts: str | None = Form(None),
     ):
-        # Runs only the Gemini call, synchronously — not the whole pipeline —
-        # so the user can see what the AI actually wrote and choose to
-        # continue (or fix it) before ever submitting a job. The key is used
-        # for this one call and never written anywhere or echoed back.
+        # Only *submits* the Gemini call; it does not wait for it to finish —
+        # see /api/generate-script/{job_id} below for why. Runs just the
+        # Gemini call, not the whole pipeline, so the user can see what the
+        # AI actually wrote and choose to continue (or fix it) before ever
+        # submitting a job. The key is used for this one call and never
+        # written anywhere or echoed back.
         gemini_api_key = _resolve_gemini_api_key(gemini_api_key)
         try:
             mode = ScriptMode[script_mode]
@@ -566,26 +578,39 @@ def create_app(
         finally:
             os.unlink(pptx_path)
 
-        try:
-            # generate_script() makes blocking, synchronous calls out to
-            # Gemini (one per slide, now run concurrently inside
-            # generate_script itself -- see script_gen.py) -- offload the
-            # whole thing to a thread so it doesn't block this single-worker
-            # event loop for the whole duration, which previously stalled
-            # every other in-flight request (including unrelated users) for
-            # as long as this call took.
-            generated_texts = await run_in_threadpool(
-                generate_script,
-                mode,
-                slides,
-                texts=parsed_texts,
-                api_key=gemini_api_key,
-                model=gemini_model,
-            )
-        except ScriptGenerationError as exc:
-            raise HTTPException(status_code=502, detail=f"script generation failed: {exc}") from exc
+        # generate_script() makes blocking, synchronous calls out to Gemini
+        # (one per slide, run concurrently inside generate_script itself --
+        # see script_gen.py). Handing the whole call to PreviewTaskManager
+        # instead of awaiting it here means this request returns immediately
+        # with a job id; the browser polls the status route below for the
+        # result. This app sits behind a reverse proxy (Pomerium) with its
+        # own upstream timeout shorter than AI generation can take for a
+        # large deck -- holding one request open for the whole duration used
+        # to get killed by that proxy with a 504 even though generation was
+        # still proceeding fine server-side.
+        job_id = app.state.script_preview_jobs.submit(
+            generate_script,
+            mode,
+            slides,
+            texts=parsed_texts,
+            api_key=gemini_api_key,
+            model=gemini_model,
+        )
+        return {"job_id": job_id}
 
-        return {"texts": generated_texts}
+    @app.get("/api/generate-script/{job_id}")
+    def get_script_preview_status(job_id: str):
+        task = app.state.script_preview_jobs.get(job_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="script preview job not found")
+        if task.status == "error":
+            # ScriptGenerationError (and anything else generate_script raises)
+            # lands here as task.error -- surfaced the same way the old
+            # synchronous 502 response did, just via polling instead.
+            return {"status": "error", "error": f"script generation failed: {task.error}"}
+        if task.status == "done":
+            return {"status": "done", "texts": task.result}
+        return {"status": "running"}
 
     @app.post("/api/analyze-visuals")
     async def analyze_visuals(

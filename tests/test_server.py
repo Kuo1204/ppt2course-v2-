@@ -1,6 +1,7 @@
 import base64
 import io
 import json
+import time
 from unittest.mock import patch
 from urllib.parse import quote
 
@@ -980,9 +981,29 @@ def test_extract_script_text_rejects_unsupported_extension(tmp_path):
 # ---------- AI script preview (AUTO / POLISH) ----------
 # Generating the whole video just to find out what the AI wrote meant the
 # user couldn't review or fix a bad script until the entire pipeline had
-# already run. This endpoint runs only the Gemini call, synchronously, so
-# the UI can show the result and let the user continue (or not) before ever
-# submitting a job.
+# already run. This endpoint runs only the Gemini call, so the UI can show
+# the result and let the user continue (or not) before ever submitting a
+# job. It's submit-then-poll (POST returns a job id, GET .../{job_id} is
+# polled for the result) rather than one blocking request/response -- see
+# preview_jobs.py for why: the production deployment sits behind a reverse
+# proxy with its own upstream timeout, shorter than a large deck's AI
+# generation can take.
+
+
+def _poll_script_preview(client, job_id, timeout=5.0):
+    """Polls .../api/generate-script/{job_id} until it leaves "running" (the
+    background thread PreviewTaskManager hands the call to is real, not
+    mocked away, so this genuinely waits for it -- these tests all mock
+    generate_script itself to return/raise instantly, so in practice this
+    loop runs only once or twice)."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        response = client.get(f"/api/generate-script/{job_id}")
+        body = response.json()
+        if body["status"] != "running":
+            return response
+        time.sleep(0.02)
+    raise AssertionError(f"script preview job {job_id} did not finish within {timeout}s")
 
 
 def test_generate_script_preview_auto_mode_returns_generated_texts(tmp_path):
@@ -995,14 +1016,16 @@ def test_generate_script_preview_auto_mode_returns_generated_texts(tmp_path):
         with patch(
             "ppt2course.server.generate_script", return_value=["AI 寫的講稿"]
         ) as mock_generate:
-            response = client.post(
+            submit_response = client.post(
                 "/api/generate-script",
                 data={"script_mode": "AUTO", "gemini_api_key": "secret-key"},
                 files={"pptx": ("deck.pptx", io.BytesIO(b"fake-pptx"), "application/octet-stream")},
             )
+            assert submit_response.status_code == 202
+            response = _poll_script_preview(client, submit_response.json()["job_id"])
 
     assert response.status_code == 200
-    assert response.json() == {"texts": ["AI 寫的講稿"]}
+    assert response.json() == {"status": "done", "texts": ["AI 寫的講稿"]}
     assert mock_generate.call_args.args[0] == ScriptMode.AUTO
     assert mock_generate.call_args.kwargs["api_key"] == "secret-key"
 
@@ -1017,7 +1040,7 @@ def test_generate_script_preview_polish_mode_forwards_input_texts(tmp_path):
         with patch(
             "ppt2course.server.generate_script", return_value=["潤飾後的講稿"]
         ) as mock_generate:
-            response = client.post(
+            submit_response = client.post(
                 "/api/generate-script",
                 data={
                     "script_mode": "POLISH",
@@ -1026,9 +1049,11 @@ def test_generate_script_preview_polish_mode_forwards_input_texts(tmp_path):
                 },
                 files={"pptx": ("deck.pptx", io.BytesIO(b"fake-pptx"), "application/octet-stream")},
             )
+            assert submit_response.status_code == 202
+            response = _poll_script_preview(client, submit_response.json()["job_id"])
 
     assert response.status_code == 200
-    assert response.json() == {"texts": ["潤飾後的講稿"]}
+    assert response.json() == {"status": "done", "texts": ["潤飾後的講稿"]}
     assert mock_generate.call_args.kwargs["texts"] == ["我自己寫的草稿"]
 
 
@@ -1084,13 +1109,18 @@ def test_generate_script_preview_wraps_gemini_error(tmp_path):
             "ppt2course.server.generate_script",
             side_effect=ScriptGenerationError("Gemini API call failed: boom"),
         ):
-            response = client.post(
+            submit_response = client.post(
                 "/api/generate-script",
                 data={"script_mode": "AUTO", "gemini_api_key": "secret-key"},
                 files={"pptx": ("deck.pptx", io.BytesIO(b"fake-pptx"), "application/octet-stream")},
             )
-    assert response.status_code == 502
-    assert "boom" in response.json()["detail"]
+            assert submit_response.status_code == 202
+            response = _poll_script_preview(client, submit_response.json()["job_id"])
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "error"
+    assert "boom" in body["error"]
 
 
 def test_generate_script_preview_never_stores_the_api_key(tmp_path):
@@ -1103,11 +1133,13 @@ def test_generate_script_preview_never_stores_the_api_key(tmp_path):
     fake_slides = [SlideContent(index=1, text="投影片一", notes="")]
     with patch("ppt2course.server.parse_ppt", return_value=fake_slides):
         with patch("ppt2course.server.generate_script", return_value=["text"]):
-            response = client.post(
+            submit_response = client.post(
                 "/api/generate-script",
                 data={"script_mode": "AUTO", "gemini_api_key": "super-secret-key"},
                 files={"pptx": ("deck.pptx", io.BytesIO(b"fake-pptx"), "application/octet-stream")},
             )
+            assert "super-secret-key" not in submit_response.text
+            response = _poll_script_preview(client, submit_response.json()["job_id"])
     assert "super-secret-key" not in response.text
 
 

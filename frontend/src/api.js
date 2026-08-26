@@ -111,11 +111,19 @@ export async function fetchPptxNotes(pptxFile) {
   return response.json();
 }
 
-export async function generateScriptPreview({ pptxFile, scriptMode, geminiApiKey, geminiModel, texts }) {
+// Script generation calls out to Gemini and can run long enough (large
+// decks) to outlive the reverse proxy's own upstream timeout in front of
+// the production deployment -- a single blocking request for it used to
+// come back as an opaque HTTP 504 even when generation was still working
+// fine server-side. So this is submit-then-poll instead of one call:
+// startScriptPreview() returns a job id right away, and
+// pollScriptPreview() below is polled for the result. generateScriptPreview
+// wraps both together for callers that just want the final texts.
+export async function startScriptPreview({ pptxFile, scriptMode, geminiApiKey, geminiModel, texts }) {
   const form = new FormData();
   form.append("pptx", pptxFile);
   form.append("script_mode", scriptMode);
-  form.append("gemini_api_key", geminiApiKey);
+  if (geminiApiKey) form.append("gemini_api_key", geminiApiKey);
   if (geminiModel) form.append("gemini_model", geminiModel);
   if (texts) form.append("texts", JSON.stringify(texts));
 
@@ -130,7 +138,29 @@ export async function generateScriptPreview({ pptxFile, scriptMode, geminiApiKey
     throw new Error(body.detail || `講稿生成失敗 (HTTP ${response.status})`);
   }
 
-  return response.json();
+  return response.json(); // { job_id }
+}
+
+export async function pollScriptPreview(jobId) {
+  const response = await fetch(apiUrl(`api/generate-script/${jobId}`), {
+    headers: NGROK_BYPASS_HEADERS,
+  });
+  if (!response.ok) {
+    throw new Error(`查詢講稿生成狀態失敗 (HTTP ${response.status})`);
+  }
+  return response.json(); // { status: "running" | "done" | "error", texts?, error? }
+}
+
+const SCRIPT_PREVIEW_POLL_INTERVAL_MS = 2000;
+
+export async function generateScriptPreview(args) {
+  const { job_id: jobId } = await startScriptPreview(args);
+  for (;;) {
+    const status = await pollScriptPreview(jobId);
+    if (status.status === "done") return { texts: status.texts };
+    if (status.status === "error") throw new Error(status.error || "講稿生成失敗");
+    await new Promise((resolve) => setTimeout(resolve, SCRIPT_PREVIEW_POLL_INTERVAL_MS));
+  }
 }
 
 export async function analyzeVisuals({ pptxFile, texts, voice, voiceRate, voiceVolume, geminiApiKey, geminiModel }) {
