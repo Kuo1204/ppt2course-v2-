@@ -432,14 +432,14 @@ function App() {
   }
 
   useEffect(() => {
-    if (!pptxFile) {
-      pptxPreviewRequestRef.current += 1; // invalidate any in-flight request
-      setPptxPreviewStatus("idle");
-      setPptxPreviewThumbnails([]);
-      setPptxPreviewError(null);
-      return;
-    }
-    loadPptxPreview(pptxFile);
+    pptxPreviewRequestRef.current += 1; // invalidate any in-flight request
+    setPptxPreviewStatus("idle");
+    setPptxPreviewThumbnails([]);
+    setPptxPreviewError(null);
+    // PPTX preview mode is disabled for now -- see the comment above
+    // loadPptxPreview: uncomment the call below to bring it back.
+    // if (!pptxFile) return;
+    // loadPptxPreview(pptxFile);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pptxFile]);
 
