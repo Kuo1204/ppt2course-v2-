@@ -8,7 +8,6 @@ network.
 
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor
 from enum import Enum, auto
 
 from google import genai
@@ -18,16 +17,17 @@ from ppt2course.upload import SlideContent
 DEFAULT_GEMINI_MODEL = "gemini-flash-latest"
 MAX_RETRIES = 5
 
-# AUTO/POLISH used to call Gemini once per slide *sequentially* -- for an
-# N-slide deck that's N calls (each with its own up-to-5-attempt retry/backoff
-# on top) all on one request's clock. A 10+ slide deck routinely pushed total
-# wall-clock past the platform's front-door gateway timeout, which then
-# returned the client a 504 while this call was still running server-side
-# (visible in the container's own log a bit later as a mismatched 502 once
-# the still-running call finally gave up). Running every slide's call
-# concurrently instead cuts total wall-clock from "sum of all slides" to
-# roughly "the slowest single slide" (plus whatever backoff that one hits).
-_MAX_CONCURRENT_GEMINI_CALLS = 8
+# AUTO/POLISH used to call Gemini once *per slide* -- for an N-slide deck
+# that's N requests against the API's own per-day quota (the free tier is as
+# low as 20 requests/day/model), so a single 10-slide generation could burn
+# half a day's quota by itself. Batching every slide into one prompt/one
+# response (see _AUTO_BATCH_PROMPT_TEMPLATE / _POLISH_BATCH_PROMPT_TEMPLATE
+# and _parse_batch_response below) turns a whole deck into exactly one
+# request regardless of slide count. This used to also run every slide
+# concurrently to keep total wall-clock under the platform's gateway
+# timeout; that concern is now handled at the HTTP layer instead (see
+# preview_jobs.py's submit-then-poll), so a single request taking as long as
+# the whole deck used to collectively take is no longer a problem here.
 
 
 class ScriptMode(Enum):
@@ -46,31 +46,69 @@ class ScriptGenerationError(Exception):
 # leave a slide silent.
 _REQUIRES_NON_EMPTY = {ScriptMode.AUTO, ScriptMode.POLISH}
 
-_AUTO_PROMPT_TEMPLATE = """你是一位企業教育訓練講師。
-請依照以下投影片內容,撰寫約30~60秒的口語化教學講稿。
+_AUTO_BATCH_PROMPT_TEMPLATE = """你是一位企業教育訓練講師。
+請依照以下每一頁投影片的內容,各自撰寫約30~60秒的口語化教學講稿。
 
 要求:
 - 不要逐字唸投影片文字,要用自然口語表達,像真人講師在課堂上說話
 - 保留專有名詞、法規名稱的正確用字,不可竄改
 - 使用繁體中文
-- 只輸出講稿本身文字,不要加任何標題、說明或引言
+- 每一頁的講稿前面都必須先單獨一行輸出「===SLIDE {{n}}===」(n 為下方對應的投影片編號),
+  接著才是該頁講稿本身;不要加任何其他標題、說明或引言;不可省略任何一頁
 
-投影片內容:
-{content}
+投影片內容(共 {count} 頁):
+
+{sections}
 """
 
-_POLISH_PROMPT_TEMPLATE = """你是一位教育訓練講師的講稿修飾助手。
-請將以下講稿修飾得更口語自然,適合教育訓練講師實際講課使用。
+_POLISH_BATCH_PROMPT_TEMPLATE = """你是一位教育訓練講師的講稿修飾助手。
+請將以下每一頁講稿分別修飾得更口語自然,適合教育訓練講師實際講課使用。
 
 要求:
 - 不要改變原意,不要增加或刪減重要資訊(例如法規名稱、數字、步驟)
 - 只是把語氣改得更自然、更口語化,去除生硬的書面用語
 - 使用繁體中文
-- 只輸出修飾後的講稿文字,不要加任何說明或標題
+- 每一頁修飾後的講稿前面都必須先單獨一行輸出「===SLIDE {{n}}===」(n 為下方對應的投影片編號),
+  接著才是該頁講稿本身;不要加任何其他說明或標題;不可省略任何一頁
 
-原始講稿:
-{content}
+原始講稿(共 {count} 頁):
+
+{sections}
 """
+
+# Matches the "===SLIDE {n}===" markers the prompts above ask Gemini to
+# prefix each slide's script with -- tolerant of whitespace variance since
+# it's parsing free-form model output, not a format we control on both ends.
+_SLIDE_MARKER_RE = re.compile(r"===\s*SLIDE\s+(\d+)\s*===", re.IGNORECASE)
+
+
+def _build_batch_sections(slides: list[SlideContent], contents: list[str]) -> str:
+    return "\n\n".join(
+        f"===SLIDE {slide.index}===\n{content}" for slide, content in zip(slides, contents)
+    )
+
+
+def _parse_batch_response(response_text: str, slides: list[SlideContent]) -> list[str]:
+    """Splits one batched Gemini response back out into one script per slide,
+    keyed by the "===SLIDE {n}===" markers the prompt asked for -- returned
+    in ``slides`` order regardless of what order the model produced them in.
+    Raises if the model dropped a slide rather than silently returning a
+    short result list (which would then get zipped against the wrong
+    slides)."""
+    parts = _SLIDE_MARKER_RE.split(response_text)
+    by_index: dict[int, str] = {}
+    # re.split on a pattern with one capture group returns
+    # [text_before_first_match, group1, text1, group2, text2, ...] -- the
+    # leading chunk (parts[0], anything before the first marker) is discarded.
+    for i in range(1, len(parts), 2):
+        by_index[int(parts[i])] = parts[i + 1].strip()
+
+    missing = [slide.index for slide in slides if slide.index not in by_index]
+    if missing:
+        raise ScriptGenerationError(
+            f"Gemini response did not include a script for slide index(es): {missing}"
+        )
+    return [by_index[slide.index] for slide in slides]
 
 
 def _generate_from_notes(slides: list[SlideContent]) -> list[str]:
@@ -154,27 +192,18 @@ def _call_gemini(
     raise ScriptGenerationError(f"Gemini API call failed: {last_error}") from last_error
 
 
-def _run_concurrently(prompts: list[str], api_key: str, model: str) -> list[str]:
-    """Runs one `_call_gemini` per prompt concurrently (bounded thread pool)
-    and returns results in the same order as `prompts` -- order matters here
-    because callers zip the result back up against `slides`/`texts` by
-    position. The first exception raised by any slide is what's raised to
-    the caller (via `Future.result()`), same as the old sequential loop would
-    have raised on the first failing slide -- just without waiting for every
-    earlier slide to finish first."""
-    with ThreadPoolExecutor(max_workers=min(_MAX_CONCURRENT_GEMINI_CALLS, len(prompts))) as pool:
-        futures = [pool.submit(_call_gemini, prompt, api_key, model) for prompt in prompts]
-        return [future.result() for future in futures]
-
-
 def _generate_auto(
     slides: list[SlideContent], api_key: str | None, model: str
 ) -> list[str]:
     if not api_key:
         raise ScriptGenerationError("api_key is required for ScriptMode.AUTO")
+    if not slides:
+        return []
 
-    prompts = [_AUTO_PROMPT_TEMPLATE.format(content=slide.text) for slide in slides]
-    results = _run_concurrently(prompts, api_key, model)
+    sections = _build_batch_sections(slides, [slide.text for slide in slides])
+    prompt = _AUTO_BATCH_PROMPT_TEMPLATE.format(count=len(slides), sections=sections)
+    response_text = _call_gemini(prompt, api_key, model)
+    results = _parse_batch_response(response_text, slides)
     for slide, text in zip(slides, results):
         if not text.strip():
             raise ScriptGenerationError(
@@ -197,6 +226,8 @@ def _generate_polish(
         raise ScriptGenerationError(
             f"texts length ({len(texts)}) does not match slide count ({len(slides)})"
         )
+    if not slides:
+        return []
 
     for slide, text in zip(slides, texts):
         if not text.strip():
@@ -204,8 +235,10 @@ def _generate_polish(
                 f"POLISH does not allow empty input text (slide index {slide.index})"
             )
 
-    prompts = [_POLISH_PROMPT_TEMPLATE.format(content=text) for text in texts]
-    results = _run_concurrently(prompts, api_key, model)
+    sections = _build_batch_sections(slides, texts)
+    prompt = _POLISH_BATCH_PROMPT_TEMPLATE.format(count=len(slides), sections=sections)
+    response_text = _call_gemini(prompt, api_key, model)
+    results = _parse_batch_response(response_text, slides)
     for slide, polished in zip(slides, results):
         if not polished.strip():
             raise ScriptGenerationError(

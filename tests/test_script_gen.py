@@ -91,11 +91,24 @@ def _patch_genai(results):
     )
 
 
-def test_auto_mode_calls_gemini_per_slide_and_returns_scripts():
+def _batched(*pairs):
+    """Builds one fake Gemini response text out of (slide_index, script)
+    pairs, matching the "===SLIDE {n}===" format the real prompts ask for --
+    since AUTO/POLISH now send the whole deck as a single request/response
+    (see script_gen.py's module docstring for why: one call per generation
+    instead of one call per slide, to not blow through the API's per-day
+    quota), every test response has to speak this format even for a single
+    slide."""
+    return "\n\n".join(f"===SLIDE {index}===\n{text}" for index, text in pairs)
+
+
+def test_auto_mode_sends_one_batched_request_and_returns_scripts_per_slide():
     slides = [slide(1, text="投影片一內容"), slide(2, text="投影片二內容")]
-    with _patch_genai(["AI講稿一", "AI講稿二"]):
+    with _patch_genai([_batched((1, "AI講稿一"), (2, "AI講稿二"))]) as mock_ctor:
         result = generate_script(ScriptMode.AUTO, slides, api_key="fake-key")
     assert result == ["AI講稿一", "AI講稿二"]
+    # One request for the whole deck, not one per slide.
+    assert mock_ctor.call_count == 1
 
 
 def test_auto_mode_raises_without_api_key():
@@ -106,17 +119,25 @@ def test_auto_mode_raises_without_api_key():
 
 def test_auto_mode_raises_on_empty_gemini_response():
     slides = [slide(1)]
-    with _patch_genai([""]):
+    with _patch_genai([_batched((1, ""))]):
         with pytest.raises(ScriptGenerationError):
             generate_script(ScriptMode.AUTO, slides, api_key="fake-key")
 
 
-def test_polish_mode_calls_gemini_per_slide_and_returns_polished_scripts():
+def test_auto_mode_raises_when_response_is_missing_a_slide():
+    slides = [slide(1), slide(2)]
+    with _patch_genai([_batched((1, "只有第一頁"))]):
+        with pytest.raises(ScriptGenerationError, match=r"\[2\]"):
+            generate_script(ScriptMode.AUTO, slides, api_key="fake-key")
+
+
+def test_polish_mode_sends_one_batched_request_and_returns_scripts_per_slide():
     slides = [slide(1), slide(2)]
     texts = ["原始講稿一", "原始講稿二"]
-    with _patch_genai(["修飾後講稿一", "修飾後講稿二"]):
+    with _patch_genai([_batched((1, "修飾後講稿一"), (2, "修飾後講稿二"))]) as mock_ctor:
         result = generate_script(ScriptMode.POLISH, slides, texts=texts, api_key="fake-key")
     assert result == ["修飾後講稿一", "修飾後講稿二"]
+    assert mock_ctor.call_count == 1
 
 
 def test_polish_mode_prompt_contains_original_text():
@@ -125,7 +146,7 @@ def test_polish_mode_prompt_contains_original_text():
     captured = {}
 
     def fake_ctor(api_key):
-        client = FakeGenaiClient(["修飾後的講稿"])
+        client = FakeGenaiClient([_batched((1, "修飾後的講稿"))])
         captured["client"] = client
         return client
 
@@ -161,7 +182,7 @@ def test_polish_mode_raises_on_empty_input_text():
 
 def test_polish_mode_raises_on_empty_gemini_response():
     slides = [slide(1)]
-    with _patch_genai([""]):
+    with _patch_genai([_batched((1, ""))]):
         with pytest.raises(ScriptGenerationError):
             generate_script(ScriptMode.POLISH, slides, texts=["原始文字"], api_key="fake-key")
 
@@ -171,7 +192,7 @@ def test_polish_mode_raises_on_empty_gemini_response():
 def test_retries_on_rate_limit_error_then_succeeds():
     slides = [slide(1)]
     rate_limit_error = Exception('429 RESOURCE_EXHAUSTED {"retryDelay": "1s"}')
-    with _patch_genai([rate_limit_error, "終於成功了"]):
+    with _patch_genai([rate_limit_error, _batched((1, "終於成功了"))]):
         with patch("ppt2course.script_gen.time.sleep") as mock_sleep:
             result = generate_script(ScriptMode.AUTO, slides, api_key="fake-key")
     assert result == ["終於成功了"]
@@ -213,7 +234,7 @@ def test_retries_on_503_unavailable_then_succeeds():
         "currently experiencing high demand. Spikes in demand are usually "
         "temporary. Please try again later.', 'status': 'UNAVAILABLE'}}"
     )
-    with _patch_genai([overloaded_error, "終於成功了"]):
+    with _patch_genai([overloaded_error, _batched((1, "終於成功了"))]):
         with patch("ppt2course.script_gen.time.sleep") as mock_sleep:
             result = generate_script(ScriptMode.AUTO, slides, api_key="fake-key")
     assert result == ["終於成功了"]
@@ -224,7 +245,7 @@ def test_retries_on_internal_and_deadline_exceeded_errors():
     slides = [slide(1)]
     internal_error = Exception("500 INTERNAL")
     deadline_error = Exception("504 DEADLINE_EXCEEDED")
-    with _patch_genai([internal_error, deadline_error, "成功"]):
+    with _patch_genai([internal_error, deadline_error, _batched((1, "成功"))]):
         with patch("ppt2course.script_gen.time.sleep"):
             result = generate_script(ScriptMode.AUTO, slides, api_key="fake-key")
     assert result == ["成功"]
@@ -245,7 +266,7 @@ def test_503_retry_uses_capped_exponential_backoff_not_retry_delay_parsing():
     # the error text.
     slides = [slide(1)]
     overloaded_error = Exception("503 UNAVAILABLE")
-    with _patch_genai([overloaded_error, overloaded_error, overloaded_error, "成功"]):
+    with _patch_genai([overloaded_error, overloaded_error, overloaded_error, _batched((1, "成功"))]):
         with patch("ppt2course.script_gen.time.sleep") as mock_sleep:
             generate_script(ScriptMode.AUTO, slides, api_key="fake-key")
     assert [c.args[0] for c in mock_sleep.call_args_list] == [5, 10, 20]
