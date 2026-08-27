@@ -966,14 +966,22 @@ function UploadStep({
           <label htmlFor="pptx-input">
             PPTX 檔案 <FieldTag required />
           </label>
-          <div className="uploader">
+          <div className={`uploader${pptxFile ? " has-file" : ""}`}>
             <input
               id="pptx-input"
               type="file"
               accept=".pptx"
               onChange={(e) => setPptxFile(e.target.files[0] || null)}
             />
-            <span className="filename">{pptxFile ? pptxFile.name : "尚未選擇檔案"}</span>
+            <span className="filename">
+              {pptxFile ? (
+                <>
+                  <span className="filename-check" aria-hidden="true">✓</span> {pptxFile.name}
+                </>
+              ) : (
+                "尚未選擇檔案"
+              )}
+            </span>
             <span className="btn-mini">選擇</span>
           </div>
 
@@ -1025,7 +1033,7 @@ function UploadStep({
             每頁投影片的圖片 <FieldTag required />{" "}
             <span className="hint">— 依順序全選，張數需與 PPTX 頁數相同</span>
           </label>
-          <div className="uploader">
+          <div className={`uploader${imageFiles.length ? " has-file" : ""}`}>
             <input
               id="images-input"
               type="file"
@@ -1034,7 +1042,13 @@ function UploadStep({
               onChange={(e) => setImageFiles(Array.from(e.target.files))}
             />
             <span className="filename">
-              {imageFiles.length ? `已選 ${imageFiles.length} 張圖片` : "尚未選擇檔案"}
+              {imageFiles.length ? (
+                <>
+                  <span className="filename-check" aria-hidden="true">✓</span> 已選 {imageFiles.length} 張圖片
+                </>
+              ) : (
+                "尚未選擇檔案"
+              )}
             </span>
             <span className="btn-mini">選擇</span>
           </div>
@@ -1540,7 +1554,7 @@ function ExtrasStep({
     subtitleBold === SUBTITLE_BOLD_DEFAULT;
 
   return (
-    <>
+    <div className="extras-step">
       <CardHead eyebrow="Step 04" title="進階選項" trailing="全部選填" />
       <div className="field-grid">
         <div className="field full">
@@ -1756,7 +1770,7 @@ function ExtrasStep({
           </div>
         </CollapsibleField>
       </div>
-    </>
+    </div>
   );
 }
 

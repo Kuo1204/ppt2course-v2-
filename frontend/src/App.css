@@ -226,6 +226,12 @@
   letter-spacing: normal;
 }
 
+/* Step 04 (進階選項) packs in many fields at once, so its labels get a bump
+   over the site-wide 12px default to stay readable at a glance. */
+.extras-step .field label {
+  font-size: 14px;
+}
+
 /* Required/optional marker shown next to a field's label. Kept visually
    distinct from `.badge` (which flags a script mode as needing Gemini) so
    the two meanings never blur together at a glance. */
@@ -394,6 +400,12 @@ input[type="range"] {
   border-color: var(--accent);
 }
 
+.uploader.has-file {
+  border-style: solid;
+  border-color: var(--state-done);
+  background: color-mix(in srgb, var(--state-done) 8%, var(--surface-raised));
+}
+
 .uploader input[type="file"] {
   position: absolute;
   inset: 0;
@@ -409,6 +421,16 @@ input[type="range"] {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.uploader.has-file .filename {
+  color: var(--state-done);
+  font-weight: 600;
+}
+
+.filename-check {
+  color: var(--state-done);
+  font-weight: 700;
 }
 
 .btn-mini {
