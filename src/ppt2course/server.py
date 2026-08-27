@@ -14,22 +14,19 @@ import html as html_escape
 import json
 import os
 import re
-import secrets
 import tempfile
 import threading
 import time
 import uuid
 from dataclasses import asdict
 from pathlib import Path
-# Aliased: fastapi.Request (imported below, used for the ASGI request in the
-# Basic Auth middleware) would otherwise silently shadow this one.
 from urllib.request import Request as UrllibRequest
 from urllib.request import urlopen
 from urllib.parse import urlparse
 
 import static_ffmpeg
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -131,30 +128,6 @@ ALLOWED_TRANSITIONS = {
     "fade", "dissolve", "wipeleft", "wiperight", "slideleft", "slideright", "circlecrop"
 }
 
-# The mobile-download QR code links to /share/{job_id}, which itself embeds
-# links to /download and /view. A phone's camera app / QR scanner typically
-# opens the link in a lightweight in-app browser that doesn't render a Basic
-# Auth login prompt — the request just silently fails there. The job id is an
-# unguessable UUID, so exempting only these routes (not job creation, not job
-# status, not anything else) keeps "scan the QR, land on a page, choose
-# preview or download" frictionless without weakening the gate on the parts
-# that actually cost compute.
-_DOWNLOAD_TYPES_ALTERNATION = "|".join(re.escape(t) for t in ALLOWED_DOWNLOAD_TYPES)
-_AUTH_EXEMPT_ROUTE_PATTERN = re.compile(
-    r"^/api/jobs/[^/]+/(?:download|view)/(?:" + _DOWNLOAD_TYPES_ALTERNATION + r")$"
-    r"|^/share/[^/]+$"
-)
-
-
-def _is_auth_exempt_route(path: str) -> bool:
-    return bool(_AUTH_EXEMPT_ROUTE_PATTERN.match(path))
-
-# Unset by default (no auth) so local dev/tests are unaffected; set both env
-# vars to gate the whole app (API + the mounted frontend) behind a shared
-# HTTP Basic Auth credential before exposing it beyond the local network.
-DEFAULT_BASIC_AUTH_USER = os.environ.get("PPT2COURSE_BASIC_AUTH_USER")
-DEFAULT_BASIC_AUTH_PASSWORD = os.environ.get("PPT2COURSE_BASIC_AUTH_PASSWORD")
-
 # Sample text per supported voice, used for the "preview this voice" button.
 # Kept as an explicit allow-list (rather than accepting any edge-tts voice
 # string) so the preview endpoint can't be used to synthesize arbitrary text
@@ -173,8 +146,6 @@ def create_app(
     data_root: str = DEFAULT_DATA_ROOT,
     frontend_dist: str | None = DEFAULT_FRONTEND_DIST,
     voice_preview_fn=synthesize_preview,
-    basic_auth_user: str | None = DEFAULT_BASIC_AUTH_USER,
-    basic_auth_password: str | None = DEFAULT_BASIC_AUTH_PASSWORD,
 ) -> FastAPI:
     app = FastAPI(title="PPT2Course AI")
     app.state.job_manager = job_manager if job_manager is not None else JobManager()
@@ -195,19 +166,6 @@ def create_app(
         allow_methods=["*"],
         allow_headers=["*"],
     )
-
-    if basic_auth_user and basic_auth_password:
-
-        @app.middleware("http")
-        async def require_basic_auth(request: Request, call_next):
-            if _is_auth_exempt_route(request.url.path) or _has_valid_basic_auth(
-                request.headers.get("authorization", ""), basic_auth_user, basic_auth_password
-            ):
-                return await call_next(request)
-            return Response(
-                status_code=401,
-                headers={"WWW-Authenticate": 'Basic realm="PPT2Course AI"'},
-            )
 
     @app.post("/api/jobs")
     async def create_job(
@@ -735,19 +693,6 @@ def create_app(
         app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="frontend")
 
     return app
-
-
-def _has_valid_basic_auth(header: str, expected_user: str, expected_password: str) -> bool:
-    if not header.startswith("Basic "):
-        return False
-    try:
-        decoded = base64.b64decode(header.removeprefix("Basic ")).decode("utf-8")
-    except (ValueError, UnicodeDecodeError):
-        return False
-    user, _, password = decoded.partition(":")
-    return secrets.compare_digest(user, expected_user) and secrets.compare_digest(
-        password, expected_password
-    )
 
 
 _SHARE_PAGE_LABELS = {"mp4": "課程影片 (.mp4)", "srt": "字幕檔 (.srt)", "docx": "逐字稿 (.docx)"}
