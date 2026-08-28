@@ -8,6 +8,11 @@ dependencies = [
     "edge-tts>=7.0",
     "python-docx>=1.1",
     "google-genai>=1.0",
+    # Already pulled in transitively by google-genai (its HTTP transport) --
+    # declared explicitly too because script_gen.py now imports it directly
+    # to recognize transient connection failures (httpx.TransportError) for
+    # retry, not just genai's own re-exported types.
+    "httpx>=0.27",
     "fastapi>=0.115",
     "uvicorn>=0.30",
     "python-multipart>=0.0.9",

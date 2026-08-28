@@ -10,6 +10,7 @@ import re
 import time
 from enum import Enum, auto
 
+import httpx
 from google import genai
 
 from ppt2course.upload import SlideContent
@@ -156,6 +157,20 @@ def _is_transient_server_error(error_str: str) -> bool:
     return any(marker in error_str for marker in _TRANSIENT_SERVER_ERROR_MARKERS)
 
 
+# A real user report: "Gemini API call failed: Server disconnected without
+# sending a response." -- unlike the UNAVAILABLE/INTERNAL/DEADLINE_EXCEEDED
+# cases above, this never reaches Google's servers at all (a proxy or the
+# connection itself dropped mid-request), so it carries none of those
+# markers and used to raise immediately on the very first attempt.
+# `httpx.TransportError` (the base of RemoteProtocolError, ConnectError,
+# ConnectTimeout, ReadTimeout, ...) is what the genai SDK's underlying httpx
+# client raises for exactly this class of "never got a response at all"
+# failure, so checking the exception's type catches it (and future
+# variations of the same message) instead of matching this one string.
+def _is_transient_network_error(exc: Exception) -> bool:
+    return isinstance(exc, httpx.TransportError)
+
+
 def _transient_backoff_seconds(attempt: int) -> int:
     # Unlike a 429's quota response, these carry no retryDelay hint to
     # parse -- a capped exponential backoff (5s, 10s, 20s, 30s, 30s...)
@@ -184,7 +199,7 @@ def _call_gemini(
                 if _is_rate_limit_error(error_str):
                     time.sleep(_extract_retry_delay(error_str))
                     continue
-                if _is_transient_server_error(error_str):
+                if _is_transient_server_error(error_str) or _is_transient_network_error(exc):
                     time.sleep(_transient_backoff_seconds(attempt))
                     continue
             raise ScriptGenerationError(f"Gemini API call failed: {exc}") from exc

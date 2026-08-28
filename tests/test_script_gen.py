@@ -1,5 +1,6 @@
 from unittest.mock import patch
 
+import httpx
 import pytest
 
 from ppt2course.script_gen import ScriptGenerationError, ScriptMode, generate_script
@@ -270,3 +271,32 @@ def test_503_retry_uses_capped_exponential_backoff_not_retry_delay_parsing():
         with patch("ppt2course.script_gen.time.sleep") as mock_sleep:
             generate_script(ScriptMode.AUTO, slides, api_key="fake-key")
     assert [c.args[0] for c in mock_sleep.call_args_list] == [5, 10, 20]
+
+
+# ---- retry-on-transient-network-error behavior (connection dropped) ----
+#
+# Regression coverage for a real user report: "script generation failed:
+# Gemini API call failed: Server disconnected without sending a response."
+# -- unlike a 503/UNAVAILABLE response, this never got a response from
+# Google at all (the connection itself was dropped, e.g. by a flaky proxy),
+# so the string carries none of the UNAVAILABLE/INTERNAL/DEADLINE_EXCEEDED/
+# RESOURCE_EXHAUSTED markers the old retry logic looked for and raised
+# immediately on the first attempt.
+
+def test_retries_on_server_disconnected_then_succeeds():
+    slides = [slide(1)]
+    disconnected_error = httpx.RemoteProtocolError("Server disconnected without sending a response.")
+    with _patch_genai([disconnected_error, _batched((1, "終於成功了"))]):
+        with patch("ppt2course.script_gen.time.sleep") as mock_sleep:
+            result = generate_script(ScriptMode.AUTO, slides, api_key="fake-key")
+    assert result == ["終於成功了"]
+    mock_sleep.assert_called_once()
+
+
+def test_raises_after_exhausting_retries_on_persistent_disconnection():
+    slides = [slide(1)]
+    disconnected_error = httpx.RemoteProtocolError("Server disconnected without sending a response.")
+    with _patch_genai([disconnected_error] * 5):
+        with patch("ppt2course.script_gen.time.sleep"):
+            with pytest.raises(ScriptGenerationError, match="Server disconnected"):
+                generate_script(ScriptMode.AUTO, slides, api_key="fake-key")
