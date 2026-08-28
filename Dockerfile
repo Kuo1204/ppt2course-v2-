@@ -22,11 +22,13 @@ FROM python:3.12-slim AS runtime
 # but can't reach deb.debian.org to install OS packages via apt — that build
 # consistently fails with "Connection failed" against the Debian mirror.
 # `static-ffmpeg` (declared in pyproject.toml) provides `ffmpeg`/`ffprobe` via
-# a pip-downloaded static build instead, sidestepping apt entirely. One
-# side effect: without the `fonts-noto-cjk` system package, libass falls back
-# to a substitute font per-glyph for the subtitle burn-in style that names
-# "Noto Sans CJK TC" explicitly — still renders correctly, just not in the
-# intended typeface.
+# a pip-downloaded static build instead, sidestepping apt entirely. Same
+# reasoning applies to the `fonts-noto-cjk` system package the subtitle
+# burn-in style needs (it names "Noto Sans CJK TC" explicitly) — this image
+# has *no* fonts at all, not a substitute one, so ppt2course/fonts.py fetches
+# the actual font file at first real use instead, the same way
+# static_ffmpeg.add_paths() below defers ffmpeg's own binary fetch to the
+# running container.
 WORKDIR /app
 # Route pip through the company's internal Nexus proxy rather than public
 # PyPI directly -- faster, and not subject to whatever intermittently made

@@ -439,6 +439,52 @@ def test_build_ffmpeg_command_custom_subtitle_colors():
     assert "OutlineColour=&HFFFFFF&" in filter_complex
 
 
+def test_build_ffmpeg_command_no_fonts_dir_by_default():
+    # No `fontsdir` option unless a caller actually asks for one -- e.g.
+    # compose_video's own best-effort auto-resolution (see fonts.py) stays
+    # entirely opt-in from _build_ffmpeg_command's point of view, so a
+    # caller/test that never heard of subtitle_fonts_dir sees the exact same
+    # filter it always has.
+    slide = _slide([TimedChunk("你好", 0, 800)])
+    cmd = _build_ffmpeg_command(
+        [slide],
+        durations_ms=[2000],
+        offsets_ms=[0],
+        srt_path="out.srt",
+        out_video_path="out.mp4",
+        transition="fade",
+        transition_duration_ms=500,
+        resolution=(1920, 1080),
+        fps=30,
+        font_size=22,
+    )
+    filter_complex = cmd[cmd.index("-filter_complex") + 1]
+    assert "fontsdir" not in filter_complex
+
+
+def test_build_ffmpeg_command_custom_subtitle_fonts_dir():
+    # This is the actual fix for subtitles not appearing at all on the
+    # deployed image (python:3.12-slim has no fonts and no apt access to
+    # install any -- see Dockerfile / fonts.py): pointing libass straight at
+    # a directory of font files, bypassing system fontconfig entirely.
+    slide = _slide([TimedChunk("你好", 0, 800)])
+    cmd = _build_ffmpeg_command(
+        [slide],
+        durations_ms=[2000],
+        offsets_ms=[0],
+        srt_path="out.srt",
+        out_video_path="out.mp4",
+        transition="fade",
+        transition_duration_ms=500,
+        resolution=(1920, 1080),
+        fps=30,
+        font_size=22,
+        subtitle_fonts_dir="/opt/fonts",
+    )
+    filter_complex = cmd[cmd.index("-filter_complex") + 1]
+    assert "fontsdir='/opt/fonts'" in filter_complex
+
+
 # ---- BrollOverlay / B-roll filter construction ----
 # The core promise: B-roll is a picture swap only. It must never appear in
 # _compute_slide_offsets, _build_cues, or durations_ms — those functions

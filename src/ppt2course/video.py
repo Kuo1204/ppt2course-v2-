@@ -18,6 +18,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 
 from ppt2course.audio_duration import get_audio_duration_ms
+from ppt2course.fonts import ensure_subtitle_font_dir
 from ppt2course.subtitle import MIN_GAP_MS, SubtitleCue, TimedChunk, cues_to_srt, generate_cues
 from ppt2course.wordseg import WordSegmenter, get_default_segmenter
 
@@ -623,6 +624,7 @@ def _subtitle_filter(
     font_color: str = DEFAULT_SUBTITLE_FONT_COLOR,
     outline_color: str = DEFAULT_SUBTITLE_OUTLINE_COLOR,
     bold: bool = DEFAULT_SUBTITLE_BOLD,
+    fonts_dir: str | None = None,
 ) -> tuple[str, str]:
     width, height = resolution
     escaped_path = _escape_ffmpeg_filter_path(srt_path)
@@ -649,7 +651,13 @@ def _subtitle_filter(
         f"BorderStyle=1,Outline=2,Shadow=0,MarginV={margin_v},"
         f"WrapStyle=2,PlayResX={width},PlayResY={height}"
     )
-    filt = f"[{video_label}]subtitles='{escaped_path}':force_style='{style}'[vsub]"
+    filt = f"[{video_label}]subtitles='{escaped_path}':force_style='{style}'"
+    if fonts_dir:
+        # Makes libass scan this directory directly by each font file's own
+        # embedded family name, independent of system fontconfig -- see
+        # fonts.py for why that matters on this platform's runtime image.
+        filt += f":fontsdir='{_escape_ffmpeg_filter_path(fonts_dir)}'"
+    filt += "[vsub]"
     return filt, "vsub"
 
 
@@ -668,6 +676,7 @@ def _build_ffmpeg_command(
     subtitle_font_color: str = DEFAULT_SUBTITLE_FONT_COLOR,
     subtitle_outline_color: str = DEFAULT_SUBTITLE_OUTLINE_COLOR,
     subtitle_bold: bool = DEFAULT_SUBTITLE_BOLD,
+    subtitle_fonts_dir: str | None = None,
     avatar_position: str = DEFAULT_AVATAR_POSITION,
     avatar_size: str = DEFAULT_AVATAR_SIZE,
     avatar_margin: int = DEFAULT_AVATAR_MARGIN,
@@ -780,7 +789,7 @@ def _build_ffmpeg_command(
     sub_filter, final_video_label = _subtitle_filter(
         srt_path, video_label, font_size, resolution, margin_v=subtitle_margin_v,
         font_color=subtitle_font_color, outline_color=subtitle_outline_color,
-        bold=subtitle_bold,
+        bold=subtitle_bold, fonts_dir=subtitle_fonts_dir,
     )
 
     filter_parts = scale_filters + audio_label_filters
@@ -1106,6 +1115,7 @@ def compose_video(
     subtitle_font_color: str = DEFAULT_SUBTITLE_FONT_COLOR,
     subtitle_outline_color: str = DEFAULT_SUBTITLE_OUTLINE_COLOR,
     subtitle_bold: bool = DEFAULT_SUBTITLE_BOLD,
+    subtitle_fonts_dir: str | None = None,
     logo_path: str | None = None,
     logo_width: int = DEFAULT_LOGO_WIDTH,
     logo_margin: int = DEFAULT_LOGO_MARGIN,
@@ -1126,6 +1136,14 @@ def compose_video(
 
     if shutil.which("ffmpeg") is None:
         raise VideoComposeError("ffmpeg executable not found")
+
+    # None (the default for every real job -- nothing sets this explicitly
+    # today) means "figure it out"; best-effort, since a subtitle font this
+    # environment happens to already have (or a caller/test that doesn't
+    # care about fonts at all) is not worth failing the whole job over. See
+    # fonts.py for why this is needed at all on this platform's runtime image.
+    if subtitle_fonts_dir is None:
+        subtitle_fonts_dir = ensure_subtitle_font_dir()
 
     # narration_durations_ms is the one true master timeline (real audio, as
     # measured off disk) — B-roll/avatar overlay windows are validated
@@ -1244,6 +1262,7 @@ def compose_video(
             subtitle_font_color=subtitle_font_color,
             subtitle_outline_color=subtitle_outline_color,
             subtitle_bold=subtitle_bold,
+            subtitle_fonts_dir=subtitle_fonts_dir,
             avatar_position=avatar_position,
             avatar_size=avatar_size,
             avatar_margin=avatar_margin,
