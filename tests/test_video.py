@@ -13,6 +13,7 @@ from ppt2course.video import (
     _AVATAR_OVERLAY_COALESCE_THRESHOLD,
     _LAUNCH_RETRY_ATTEMPTS,
     _add_logo_overlay,
+    _add_text_watermark,
     _audio_acrossfade_chain,
     _audio_concat_chain,
     _audio_label_filter,
@@ -23,6 +24,7 @@ from ppt2course.video import (
     _compute_slide_offsets,
     _concatenate_with_intro_outro,
     _effective_transition_ms,
+    _escape_drawtext_text,
     _hex_to_ass_color,
     _mix_background_music,
     _render_avatar_overlay_clip,
@@ -1692,6 +1694,72 @@ def test_add_logo_overlay_raises_on_nonzero_exit():
             _add_logo_overlay("video.mp4", "logo.png", "out.mp4", 160, 24)
 
 
+# ---- _escape_drawtext_text / _add_text_watermark ----
+
+def test_escape_drawtext_text_escapes_colon_and_percent():
+    assert _escape_drawtext_text("9:30 100%") == "9\\:30 100\\%"
+
+
+def test_escape_drawtext_text_escapes_backslash_before_other_chars():
+    assert _escape_drawtext_text("a\\b:c") == "a\\\\b\\:c"
+
+
+def test_escape_drawtext_text_handles_single_quote():
+    assert _escape_drawtext_text("it's mine") == "it'\\''s mine"
+
+
+def test_add_text_watermark_command_construction():
+    with patch("ppt2course.video.subprocess.run", return_value=_fake_run_ok()) as mock_run:
+        with patch("ppt2course.video.shutil.which", return_value=None):
+            _add_text_watermark("video.mp4", "out.mp4", "機密文件", 50, 90, 0.5, 28)
+
+    cmd = mock_run.call_args[0][0]
+    assert cmd[:2] == ["ffmpeg", "-y"]
+    assert "video.mp4" in cmd
+    assert cmd[-1] == "out.mp4"
+    filter_arg = cmd[cmd.index("-vf") + 1]
+    assert "drawtext=" in filter_arg
+    assert "text='機密文件'" in filter_arg
+    assert "fontsize=28" in filter_arg
+    assert "fontcolor=white@0.5" in filter_arg
+    assert "x=(w-text_w)*0.5" in filter_arg
+    assert "y=(h-text_h)*0.9" in filter_arg
+
+
+def test_add_text_watermark_includes_fontfile_when_font_exists(tmp_path):
+    font_dir = tmp_path
+    (font_dir / "NotoSansCJKtc-Regular.otf").write_bytes(b"fake")
+
+    with patch("ppt2course.video.subprocess.run", return_value=_fake_run_ok()) as mock_run:
+        _add_text_watermark(
+            "video.mp4", "out.mp4", "text", 50, 90, 0.5, 28, fonts_dir=str(font_dir)
+        )
+
+    filter_arg = mock_run.call_args[0][0][mock_run.call_args[0][0].index("-vf") + 1]
+    assert "fontfile=" in filter_arg
+    assert "NotoSansCJKtc-Regular.otf" in filter_arg
+
+
+def test_add_text_watermark_omits_fontfile_when_font_missing(tmp_path):
+    with patch("ppt2course.video.subprocess.run", return_value=_fake_run_ok()) as mock_run:
+        _add_text_watermark(
+            "video.mp4", "out.mp4", "text", 50, 90, 0.5, 28, fonts_dir=str(tmp_path)
+        )
+
+    filter_arg = mock_run.call_args[0][0][mock_run.call_args[0][0].index("-vf") + 1]
+    assert "fontfile=" not in filter_arg
+
+
+def test_add_text_watermark_raises_on_nonzero_exit():
+    class FakeResult:
+        returncode = 1
+        stderr = "watermark failure"
+
+    with patch("ppt2course.video.subprocess.run", return_value=FakeResult()):
+        with pytest.raises(VideoComposeError):
+            _add_text_watermark("video.mp4", "out.mp4", "text", 50, 90, 0.5, 28)
+
+
 def test_mix_background_music_command_construction():
     with patch("ppt2course.video.subprocess.run", return_value=_fake_run_ok()) as mock_run:
         _mix_background_music("video.mp4", "bgm.mp3", "out.mp4", bgm_volume=0.2)
@@ -1776,6 +1844,82 @@ def test_compose_video_chains_logo_bgm_intro_outro_when_all_provided(tmp_path):
 
     # core build + logo + bgm + intro/outro concat = 4 ffmpeg invocations
     assert mock_run.call_count == 4
+
+
+def test_compose_video_adds_watermark_step_when_enabled(tmp_path):
+    slide1 = _slide([TimedChunk("你好", 0, 800), TimedChunk("。", 800, 800)])
+
+    with patch("ppt2course.video.shutil.which", return_value="/usr/bin/ffmpeg"):
+        with patch("ppt2course.video.get_audio_duration_ms", return_value=1000):
+            with patch("ppt2course.video.shutil.copy"):
+                with patch(
+                    "ppt2course.video.subprocess.run", return_value=_fake_run_ok()
+                ) as mock_run:
+                    compose_video(
+                        [slide1],
+                        str(tmp_path / "out.mp4"),
+                        str(tmp_path / "out.srt"),
+                        watermark_enabled=True,
+                    )
+
+    # core build + watermark = 2 ffmpeg invocations
+    assert mock_run.call_count == 2
+    watermark_cmd = mock_run.call_args_list[1][0][0]
+    filter_arg = watermark_cmd[watermark_cmd.index("-vf") + 1]
+    assert "drawtext=" in filter_arg
+    assert "本影片僅供公司內部使用" in filter_arg  # DEFAULT_WATERMARK_TEXT
+
+
+def test_compose_video_watermark_disabled_ignores_custom_text(tmp_path):
+    # watermark_enabled=False must skip the step entirely, even if a caller
+    # also passed a non-default watermark_text -- "enabled" is the actual
+    # switch, not "text is non-empty".
+    slide1 = _slide([TimedChunk("你好", 0, 800), TimedChunk("。", 800, 800)])
+
+    with patch("ppt2course.video.shutil.which", return_value="/usr/bin/ffmpeg"):
+        with patch("ppt2course.video.get_audio_duration_ms", return_value=1000):
+            with patch(
+                "ppt2course.video.subprocess.run", return_value=_fake_run_ok()
+            ) as mock_run:
+                compose_video(
+                    [slide1],
+                    str(tmp_path / "out.mp4"),
+                    str(tmp_path / "out.srt"),
+                    watermark_enabled=False,
+                    watermark_text="不應該出現",
+                )
+
+    assert mock_run.call_count == 1
+
+
+def test_compose_video_forwards_watermark_settings_to_drawtext_filter(tmp_path):
+    slide1 = _slide([TimedChunk("你好", 0, 800), TimedChunk("。", 800, 800)])
+
+    with patch("ppt2course.video.shutil.which", return_value="/usr/bin/ffmpeg"):
+        with patch("ppt2course.video.get_audio_duration_ms", return_value=1000):
+            with patch("ppt2course.video.shutil.copy"):
+                with patch(
+                    "ppt2course.video.subprocess.run", return_value=_fake_run_ok()
+                ) as mock_run:
+                    compose_video(
+                        [slide1],
+                        str(tmp_path / "out.mp4"),
+                        str(tmp_path / "out.srt"),
+                        watermark_enabled=True,
+                        watermark_text="自訂浮水印文字",
+                        watermark_x_percent=10,
+                        watermark_y_percent=20,
+                        watermark_opacity=0.8,
+                        watermark_font_size=40,
+                    )
+
+    watermark_cmd = mock_run.call_args_list[1][0][0]
+    filter_arg = watermark_cmd[watermark_cmd.index("-vf") + 1]
+    assert "text='自訂浮水印文字'" in filter_arg
+    assert "x=(w-text_w)*0.1" in filter_arg
+    assert "y=(h-text_h)*0.2" in filter_arg
+    assert "fontcolor=white@0.8" in filter_arg
+    assert "fontsize=40" in filter_arg
 
 
 def test_compose_video_forwards_logo_opacity_to_overlay_filter(tmp_path):

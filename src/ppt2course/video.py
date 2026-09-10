@@ -46,6 +46,21 @@ DEFAULT_LOGO_OPACITY = 1.0
 DEFAULT_LOGO_POSITION = "top-right"
 DEFAULT_BGM_VOLUME = 0.2
 
+# Text watermark (distinct from the image Logo above) -- an always-visible
+# confidentiality notice rather than a branding mark, so it defaults to
+# disabled and, when on, to a company-boilerplate sentence rather than
+# anything a user has to type themselves.
+DEFAULT_WATERMARK_ENABLED = False
+DEFAULT_WATERMARK_TEXT = "本影片僅供公司內部使用，請勿對外轉傳或分享。"
+DEFAULT_WATERMARK_OPACITY = 0.5
+DEFAULT_WATERMARK_FONT_SIZE = 28
+# Percent of the frame's own width/height, 0-100 -- (x%, y%) = (50, 90) is
+# horizontally centered, near the bottom edge. See _add_text_watermark: the
+# text's own box is what's actually positioned at that fraction of the
+# remaining space, so 0/100 never clips off-frame regardless of text length.
+DEFAULT_WATERMARK_X_PERCENT = 50
+DEFAULT_WATERMARK_Y_PERCENT = 90
+
 # ffmpeg overlay= x:y expressions per avatar corner/side, in terms of the
 # overlay filter's own W/H (base video) and w/h (avatar) variables. Distinct
 # from _LOGO_POSITION_OVERLAYS above: the avatar only ever anchors to a
@@ -1010,6 +1025,67 @@ def _run_ffmpeg(cmd: list[str], step_description: str) -> None:
         )
 
 
+# The filtergraph description parser (any `-vf`/`-filter_complex` string,
+# not just drawtext) treats backslash/single-quote/colon as structural, and
+# drawtext's own `text=` value additionally treats a bare `%` as the start
+# of an expansion token (e.g. %{...}) unless escaped. Order matters:
+# backslash first, so escaping the later characters doesn't double-escape
+# the backslashes it just inserted. A literal single quote can't appear
+# inside a quoted string in ffmpeg's mini-language at all -- the standard
+# workaround is to close the quote, insert an escaped quote, and reopen it.
+def _escape_drawtext_text(text: str) -> str:
+    escaped = text.replace("\\", "\\\\")
+    escaped = escaped.replace(":", "\\:")
+    escaped = escaped.replace("%", "\\%")
+    escaped = escaped.replace("'", "'\\''")
+    return escaped
+
+
+def _add_text_watermark(
+    video_path: str,
+    out_path: str,
+    text: str,
+    x_percent: float,
+    y_percent: float,
+    opacity: float,
+    font_size: int,
+    fonts_dir: str | None = None,
+) -> None:
+    escaped_text = _escape_drawtext_text(text)
+    # Anchors the text box itself at this fraction of the *remaining* space
+    # ((w-text_w), not w) so it never clips off-frame regardless of how long
+    # the text is -- 0% is flush against the near edge, 100% the far edge,
+    # matching the frontend's X/Y percent sliders 1:1.
+    x_expr = f"(w-text_w)*{x_percent / 100}"
+    y_expr = f"(h-text_h)*{y_percent / 100}"
+    # A dark outline keeps the watermark legible over both light and dark
+    # slide backgrounds without needing per-job color controls (unlike the
+    # subtitle style, this is a fixed confidentiality notice, not a design
+    # element users are expected to theme).
+    outline_opacity = min(opacity + 0.3, 1.0)
+    style = (
+        f"text='{escaped_text}':fontsize={font_size}:fontcolor=white@{opacity}:"
+        f"bordercolor=black@{outline_opacity}:borderw=2:x={x_expr}:y={y_expr}"
+    )
+    # fontfile (a direct path to one specific font file) rather than
+    # fontconfig-style family-name matching -- this platform's ffmpeg build
+    # has no fontconfig at all (see fonts.py), same reasoning as the
+    # subtitle filter's `fontsdir` a few functions up.
+    font_path = os.path.join(fonts_dir, "NotoSansCJKtc-Regular.otf") if fonts_dir else None
+    if font_path and os.path.exists(font_path):
+        style = f"fontfile='{_escape_ffmpeg_filter_path(font_path)}':{style}"
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", video_path,
+        "-vf", f"drawtext={style}",
+        "-c:a", "copy",
+        "-pix_fmt", "yuv420p",
+        out_path,
+    ]
+    _run_ffmpeg(cmd, "text watermark overlay")
+
+
 def _add_logo_overlay(
     video_path: str,
     logo_path: str,
@@ -1121,6 +1197,12 @@ def compose_video(
     logo_margin: int = DEFAULT_LOGO_MARGIN,
     logo_opacity: float = DEFAULT_LOGO_OPACITY,
     logo_position: str = DEFAULT_LOGO_POSITION,
+    watermark_enabled: bool = DEFAULT_WATERMARK_ENABLED,
+    watermark_text: str = DEFAULT_WATERMARK_TEXT,
+    watermark_x_percent: float = DEFAULT_WATERMARK_X_PERCENT,
+    watermark_y_percent: float = DEFAULT_WATERMARK_Y_PERCENT,
+    watermark_opacity: float = DEFAULT_WATERMARK_OPACITY,
+    watermark_font_size: int = DEFAULT_WATERMARK_FONT_SIZE,
     bgm_path: str | None = None,
     bgm_volume: float = DEFAULT_BGM_VOLUME,
     intro_path: str | None = None,
@@ -1231,7 +1313,9 @@ def compose_video(
     with open(out_srt_path, "w", encoding="utf-8", newline="") as f:
         f.write(cues_to_srt(cues))
 
-    needs_post_processing = bool(logo_path or bgm_path or intro_path or outro_path)
+    needs_post_processing = bool(
+        logo_path or watermark_enabled or bgm_path or intro_path or outro_path
+    )
     temp_dir = tempfile.mkdtemp(prefix="ppt2course_video_") if needs_post_processing else None
 
     needs_avatar_coalescing = any(
@@ -1283,6 +1367,20 @@ def compose_video(
                 logo_margin,
                 opacity=logo_opacity,
                 position=logo_position,
+            )
+            current = next_path
+
+        if watermark_enabled and watermark_text.strip():
+            next_path = f"{temp_dir}/02b_watermark.mp4"
+            _add_text_watermark(
+                current,
+                next_path,
+                watermark_text,
+                watermark_x_percent,
+                watermark_y_percent,
+                watermark_opacity,
+                watermark_font_size,
+                fonts_dir=subtitle_fonts_dir,
             )
             current = next_path
 

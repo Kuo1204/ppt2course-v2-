@@ -10,7 +10,6 @@ echoed back in any response.
 """
 
 import base64
-import html as html_escape
 import json
 import os
 import re
@@ -28,7 +27,7 @@ import static_ffmpeg
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
@@ -69,6 +68,12 @@ from ppt2course.video import (
     DEFAULT_SUBTITLE_OUTLINE_COLOR,
     DEFAULT_TRANSITION,
     DEFAULT_TRANSITION_DURATION_MS,
+    DEFAULT_WATERMARK_ENABLED,
+    DEFAULT_WATERMARK_FONT_SIZE,
+    DEFAULT_WATERMARK_OPACITY,
+    DEFAULT_WATERMARK_TEXT,
+    DEFAULT_WATERMARK_X_PERCENT,
+    DEFAULT_WATERMARK_Y_PERCENT,
     LOGO_POSITIONS,
 )
 from ppt2course.visual_analyzer import (
@@ -193,6 +198,12 @@ def create_app(
         logo_margin: int = Form(DEFAULT_LOGO_MARGIN),
         logo_opacity: float = Form(DEFAULT_LOGO_OPACITY),
         logo_position: str = Form(DEFAULT_LOGO_POSITION),
+        watermark_enabled: bool = Form(DEFAULT_WATERMARK_ENABLED),
+        watermark_text: str = Form(DEFAULT_WATERMARK_TEXT),
+        watermark_x_percent: float = Form(DEFAULT_WATERMARK_X_PERCENT),
+        watermark_y_percent: float = Form(DEFAULT_WATERMARK_Y_PERCENT),
+        watermark_opacity: float = Form(DEFAULT_WATERMARK_OPACITY),
+        watermark_font_size: int = Form(DEFAULT_WATERMARK_FONT_SIZE),
         bgm_volume: float = Form(DEFAULT_BGM_VOLUME),
         custom_dict: str | None = Form(None),
         logo: UploadFile | None = File(None),
@@ -262,6 +273,20 @@ def create_app(
             raise HTTPException(status_code=400, detail="logo size and margin are invalid")
         if not 0 <= logo_opacity <= 1:
             raise HTTPException(status_code=400, detail="logo_opacity must be between 0 and 1")
+        if watermark_enabled and not watermark_text.strip():
+            raise HTTPException(
+                status_code=400, detail="watermark_text is required when watermark_enabled"
+            )
+        if not 0 <= watermark_x_percent <= 100:
+            raise HTTPException(status_code=400, detail="watermark_x_percent must be between 0 and 100")
+        if not 0 <= watermark_y_percent <= 100:
+            raise HTTPException(status_code=400, detail="watermark_y_percent must be between 0 and 100")
+        if not 0 <= watermark_opacity <= 1:
+            raise HTTPException(status_code=400, detail="watermark_opacity must be between 0 and 1")
+        if not 8 <= watermark_font_size <= 300:
+            raise HTTPException(
+                status_code=400, detail="watermark_font_size must be between 8 and 300"
+            )
         if not 0 <= bgm_volume <= 1:
             raise HTTPException(status_code=400, detail="bgm_volume must be between 0 and 1")
 
@@ -347,6 +372,12 @@ def create_app(
             logo_margin=logo_margin,
             logo_opacity=logo_opacity,
             logo_position=logo_position,
+            watermark_enabled=watermark_enabled,
+            watermark_text=watermark_text,
+            watermark_x_percent=watermark_x_percent,
+            watermark_y_percent=watermark_y_percent,
+            watermark_opacity=watermark_opacity,
+            watermark_font_size=watermark_font_size,
             bgm_path=bgm_path,
             bgm_volume=bgm_volume,
             intro_path=intro_path,
@@ -433,18 +464,6 @@ def create_app(
         # for either disposition, which is what lets video seeking work.
         path = _resolve_job_file_path(job_id, filetype)
         return FileResponse(path, content_disposition_type="inline")
-
-    @app.get("/share/{job_id}", response_class=HTMLResponse)
-    def share_job_page(job_id: str):
-        manager: JobManager = app.state.job_manager
-        job = manager.get(job_id)
-        if job is None:
-            return HTMLResponse(_render_share_page_not_found(), status_code=404)
-        if job.status is JobStatus.DONE:
-            return HTMLResponse(_render_share_page_done(job_id, job.result))
-        if job.status is JobStatus.ERROR:
-            return HTMLResponse(_render_share_page_error(job.error))
-        return HTMLResponse(_render_share_page_processing())
 
     @app.post("/api/extract-script-text")
     async def extract_script_text(file: UploadFile = File(...)):
@@ -693,107 +712,6 @@ def create_app(
         app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="frontend")
 
     return app
-
-
-_SHARE_PAGE_LABELS = {"mp4": "課程影片 (.mp4)", "srt": "字幕檔 (.srt)", "docx": "逐字稿 (.docx)"}
-
-# Self-contained (no build step, no external assets) so it loads fast on a
-# phone straight off a QR scan and still renders if the SPA bundle can't.
-# Matches the app's own light/dark tokens for visual consistency.
-_SHARE_PAGE_STYLE = """
-  :root { --bg:#15130e; --surface:#1f1b14; --border:#3d3626; --text:#ede7d8;
-    --text-dim:#9c9385; --accent:#e8a33d; --state-error:#e8573f; }
-  @media (prefers-color-scheme: light) {
-    :root { --bg:#f5f1e6; --surface:#ffffff; --border:#ddd5c0; --text:#211d14;
-      --text-dim:#6b6355; --accent:#b8791f; --state-error:#c13a24; }
-  }
-  * { box-sizing: border-box; }
-  body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
-    padding:24px; background:var(--bg); color:var(--text);
-    font-family:-apple-system,"Segoe UI",Arial,sans-serif; }
-  .card { width:100%; max-width:420px; background:var(--surface); border:1px solid var(--border);
-    border-radius:8px; padding:24px; text-align:center; }
-  h1 { font-size:17px; margin:0 0 16px; }
-  video { width:100%; border-radius:6px; background:#000; margin-bottom:18px; }
-  .btn { display:block; width:100%; padding:14px; margin-bottom:10px; border-radius:4px;
-    font-weight:700; text-decoration:none; box-sizing:border-box; }
-  .btn-primary { background:var(--accent); color:var(--bg); }
-  .btn-secondary { background:transparent; color:var(--text-dim); border:1px solid var(--border); }
-  p { color:var(--text-dim); font-size:14px; line-height:1.6; }
-  .error { color:var(--state-error); }
-"""
-
-
-def _share_page_shell(body: str) -> str:
-    return (
-        "<!doctype html><html lang=\"zh-Hant\"><head><meta charset=\"utf-8\">"
-        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
-        "<title>PPT2Course AI</title>"
-        f"<style>{_SHARE_PAGE_STYLE}</style></head>"
-        f"<body><div class=\"card\">{body}</div></body></html>"
-    )
-
-
-def _render_share_page_done(job_id: str, result: dict) -> str:
-    # "../api/..." (relative, one level up): this page is itself served
-    # under the platform's per-account path prefix at .../share/{job_id},
-    # and that prefix is stripped before the request reaches this container.
-    # A same-level relative path ("api/...") would resolve *inside*
-    # ".../share/", not back up to ".../api/...". Going up one level lands
-    # on the right place under whatever prefix this happens to be deployed
-    # at. A leading "/api/..." would instead jump straight to the proxy's
-    # domain root, skipping the prefix entirely.
-    video_html = (
-        f'<video controls playsinline preload="metadata" '
-        f'src="../api/jobs/{job_id}/view/mp4"></video>'
-        if "mp4" in result
-        else ""
-    )
-    buttons = []
-    if "mp4" in result:
-        buttons.append(
-            f'<a class="btn btn-primary" href="../api/jobs/{job_id}/download/mp4" download>下載影片</a>'
-        )
-    for filetype in ("srt", "docx"):
-        if filetype in result:
-            buttons.append(
-                f'<a class="btn btn-secondary" href="../api/jobs/{job_id}/download/{filetype}" download>'
-                f"下載{_SHARE_PAGE_LABELS[filetype]}</a>"
-            )
-    return _share_page_shell(
-        f"<h1>課程影片已完成</h1>{video_html}{''.join(buttons)}"
-    )
-
-
-def _render_share_page_processing() -> str:
-    body = (
-        "<h1>影片製作中</h1>"
-        "<p>還在處理中，請稍後再試，這個畫面會自動重新整理。</p>"
-    )
-    # No-JS-required auto-retry: plain <meta refresh> works even in the
-    # bare-bones in-app browser a QR scanner opens.
-    return (
-        "<!doctype html><html lang=\"zh-Hant\"><head><meta charset=\"utf-8\">"
-        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
-        '<meta http-equiv="refresh" content="5">'
-        "<title>PPT2Course AI</title>"
-        f"<style>{_SHARE_PAGE_STYLE}</style></head>"
-        f"<body><div class=\"card\">{body}</div></body></html>"
-    )
-
-
-def _render_share_page_error(error: str | None) -> str:
-    safe_error = html_escape.escape(error or "未知錯誤")
-    return _share_page_shell(
-        f'<h1>影片製作失敗</h1><p class="error">{safe_error}</p>'
-    )
-
-
-def _render_share_page_not_found() -> str:
-    return _share_page_shell(
-        "<h1>找不到這支影片</h1>"
-        "<p>連結可能已經過期(產出的檔案只保留 24 小時)，或網址不正確，請確認後再試一次。</p>"
-    )
 
 
 def _suggest_broll_timing(script: str, recommendation, voice: str, rate: str, volume: str) -> tuple[int, int]:

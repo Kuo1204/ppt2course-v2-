@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import QRCode from "qrcode";
 import "./App.css";
 import {
   analyzeVisuals,
@@ -14,7 +13,11 @@ import {
   searchMedia,
 } from "./api";
 import { parseNumberedScript } from "./scriptParser";
-import { resolveDownloadUrl } from "./urlUtils";
+import {
+  estimateGenerationSeconds,
+  estimateRemainingSeconds,
+  formatEstimatedDuration,
+} from "./estimate";
 
 const SCRIPT_MODES = [
   { value: "OWN", label: "我自己輸入逐頁講稿", needsTexts: true, needsApiKey: false },
@@ -139,6 +142,43 @@ function logoPositionStyle(position, edge) {
   }
 }
 
+// Text watermark (distinct from the image Logo above) -- a confidentiality
+// notice, not a branding mark, so it defaults to off and, when turned on, to
+// company boilerplate text rather than a blank field. Mirrors
+// video.py's DEFAULT_WATERMARK_* constants.
+const WATERMARK_TEXT_DEFAULT = "本影片僅供公司內部使用，請勿對外轉傳或分享。";
+const WATERMARK_OPACITY_MIN = 10;
+const WATERMARK_OPACITY_MAX = 100;
+const WATERMARK_OPACITY_DEFAULT = 50;
+// 0 = flush against the near edge (left / top), 100 = flush against the far
+// edge (right / bottom) -- see video.py's _add_text_watermark, which
+// anchors the text box itself at this fraction of the *remaining* space so
+// it never clips off-frame regardless of text length.
+const WATERMARK_POSITION_MIN = 0;
+const WATERMARK_POSITION_MAX = 100;
+const WATERMARK_X_PERCENT_DEFAULT = 50;
+const WATERMARK_Y_PERCENT_DEFAULT = 90;
+// Reference px at a 1080p baseline frame, rescaled the same way subtitle
+// font size is (see scaledFontSize) since the backend also burns this in as
+// a literal pixel FontSize against the real output resolution.
+const WATERMARK_FONT_SIZE_MIN = 16;
+const WATERMARK_FONT_SIZE_MAX = 64;
+const WATERMARK_FONT_SIZE_DEFAULT = 28;
+
+// Mirrors the backend's drawtext x=(w-text_w)*pct / y=(h-text_h)*pct
+// anchoring exactly: `left/top: {pct}%` places a point at that fraction of
+// the container, and `translate(-{pct}%, -{pct}%)` shifts back by that same
+// fraction of the *text's own* rendered size -- algebraically identical to
+// (container - text) * pct, just computed by the browser's layout engine
+// instead of ffmpeg's.
+function watermarkPositionStyle(xPercent, yPercent) {
+  return {
+    left: `${xPercent}%`,
+    top: `${yPercent}%`,
+    transform: `translate(-${xPercent}%, -${yPercent}%)`,
+  };
+}
+
 // Expressed as % of frame height (distance from the bottom edge) rather
 // than a raw pixel count, so the same slider position looks the same
 // whether the job renders at 720p or 4K — the backend still ultimately
@@ -188,18 +228,6 @@ function formatGenerationSeconds(seconds) {
   const total = Math.round(seconds);
   if (total < 60) return `${total} 秒`;
   return `${Math.floor(total / 60)} 分 ${total % 60} 秒`;
-}
-
-function toAbsoluteUrl(path) {
-  // Resolve against the *directory* of the current page URL, not just the
-  // origin -- this service is deployed under a per-account path prefix
-  // (https://.../<account>/<project>/) that a plain origin base would drop,
-  // sending phones that scan the QR code to the platform's domain root
-  // instead of back into this service. `path` must be a relative reference
-  // (no leading slash) for this to resolve correctly; an already-absolute
-  // dev-mode URL (baked-in localhost origin) still passes through resolveDownloadUrl's own logic unaffected.
-  const currentDirBase = new URL(".", window.location.href).href;
-  return resolveDownloadUrl(path, window.location.hostname, currentDirBase);
 }
 
 // AI 視覺素材（VisualsStep）步驟先隱藏：拿掉這裡的 STEPS 項目、下面
@@ -260,10 +288,20 @@ function App() {
   const [subtitleFontColor, setSubtitleFontColor] = useState(SUBTITLE_FONT_COLOR_DEFAULT);
   const [subtitleOutlineColor, setSubtitleOutlineColor] = useState(SUBTITLE_OUTLINE_COLOR_DEFAULT);
   const [subtitleBold, setSubtitleBold] = useState(SUBTITLE_BOLD_DEFAULT);
+  // null = not yet answered; Step 04 requires an explicit "yes"/"no" before
+  // moving on (see validateStep) so the watermark option can't be silently
+  // skipped past the way every other Step 04 field can.
+  const [watermarkDecision, setWatermarkDecision] = useState(null);
   const [logoFile, setLogoFile] = useState(null);
   const [logoOpacity, setLogoOpacity] = useState(LOGO_OPACITY_DEFAULT);
   const [logoPosition, setLogoPosition] = useState(LOGO_POSITION_DEFAULT);
   const [logoSize, setLogoSize] = useState(LOGO_SIZE_DEFAULT);
+  const [watermarkEnabled, setWatermarkEnabled] = useState(false);
+  const [watermarkText, setWatermarkText] = useState(WATERMARK_TEXT_DEFAULT);
+  const [watermarkXPercent, setWatermarkXPercent] = useState(WATERMARK_X_PERCENT_DEFAULT);
+  const [watermarkYPercent, setWatermarkYPercent] = useState(WATERMARK_Y_PERCENT_DEFAULT);
+  const [watermarkOpacity, setWatermarkOpacity] = useState(WATERMARK_OPACITY_DEFAULT);
+  const [watermarkFontSize, setWatermarkFontSize] = useState(WATERMARK_FONT_SIZE_DEFAULT);
   const [bgmFile, setBgmFile] = useState(null);
   const [introFile, setIntroFile] = useState(null);
   const [outroFile, setOutroFile] = useState(null);
@@ -290,6 +328,9 @@ function App() {
   const [jobId, setJobId] = useState(null);
   const [jobStatus, setJobStatus] = useState(null);
   const [formError, setFormError] = useState(null);
+  // When the current job started, purely for the "還需約 X 分鐘" live
+  // estimate in StatusView -- see estimate.js. Doesn't affect job polling.
+  const [jobStartedAt, setJobStartedAt] = useState(null);
 
   const pollTimerRef = useRef(null);
   const pptxPreviewRequestRef = useRef(0);
@@ -305,6 +346,22 @@ function App() {
     ? `${fontSizeOption.label}（約 ${scaledFontSize(fontSizeOption.value, resolution)}px）`
     : undefined;
   const usesAiGeneration = scriptMode === "AUTO" || scriptMode === "POLISH";
+
+  // Best-effort "預估生成時間" -- see estimate.js. Purely a display number;
+  // nothing here feeds back into the actual job request.
+  const estimatedGenerationSeconds = useMemo(
+    () =>
+      estimateGenerationSeconds({
+        slideCount: imageFiles.length,
+        resolution,
+        usesAiGeneration,
+        hasLogo: Boolean(logoFile),
+        hasBgm: Boolean(bgmFile),
+        hasIntroOrOutro: Boolean(introFile || outroFile),
+        avoidVoiceOverlap,
+      }),
+    [imageFiles.length, resolution, usesAiGeneration, logoFile, bgmFile, introFile, outroFile, avoidVoiceOverlap]
+  );
 
   // A previously-generated preview only reflects the deck/slide-count it was
   // generated from — re-uploading the deck or switching modes invalidates
@@ -523,6 +580,7 @@ function App() {
     setJobId(null);
     setJobStatus(null);
     setFormError(null);
+    setJobStartedAt(null);
     setCurrentStep(1);
 
     setPptxFile(null);
@@ -557,6 +615,12 @@ function App() {
     setLogoOpacity(LOGO_OPACITY_DEFAULT);
     setLogoPosition(LOGO_POSITION_DEFAULT);
     setLogoSize(LOGO_SIZE_DEFAULT);
+    setWatermarkEnabled(false);
+    setWatermarkText(WATERMARK_TEXT_DEFAULT);
+    setWatermarkXPercent(WATERMARK_X_PERCENT_DEFAULT);
+    setWatermarkYPercent(WATERMARK_Y_PERCENT_DEFAULT);
+    setWatermarkOpacity(WATERMARK_OPACITY_DEFAULT);
+    setWatermarkFontSize(WATERMARK_FONT_SIZE_DEFAULT);
     setBgmFile(null);
     setIntroFile(null);
     setOutroFile(null);
@@ -599,6 +663,19 @@ function App() {
           if (pasteError) return pasteError;
         } else if (perSlideTexts.some((t) => !t.trim())) {
           return "請為每一頁投影片輸入講稿";
+        }
+      }
+      return null;
+    }
+    if (step === 4) {
+      if (watermarkDecision !== "yes" && watermarkDecision !== "no") {
+        return "請選擇是否加上浮水印";
+      }
+      if (watermarkDecision === "yes") {
+        const hasImageWatermark = Boolean(logoFile);
+        const hasTextWatermark = watermarkEnabled && watermarkText.trim();
+        if (!hasImageWatermark && !hasTextWatermark) {
+          return "已選擇加上浮水印，請至少設定圖片浮水印或文字浮水印其中一項";
         }
       }
       return null;
@@ -667,12 +744,20 @@ function App() {
     form.append("subtitle_font_color", subtitleFontColor);
     form.append("subtitle_outline_color", subtitleOutlineColor);
     if (subtitleBold) form.append("subtitle_bold", "true");
-    if (logoFile) {
+    if (watermarkDecision === "yes" && logoFile) {
       form.append("logo", logoFile);
       form.append("logo_opacity", String(logoOpacity / 100));
       form.append("logo_position", logoPosition);
       form.append("logo_width", String(scaledLogoWidth(logoSize, resolution)));
       form.append("logo_margin", String(scaledLogoMargin(resolution)));
+    }
+    if (watermarkDecision === "yes" && watermarkEnabled && watermarkText.trim()) {
+      form.append("watermark_enabled", "true");
+      form.append("watermark_text", watermarkText);
+      form.append("watermark_x_percent", String(watermarkXPercent));
+      form.append("watermark_y_percent", String(watermarkYPercent));
+      form.append("watermark_opacity", String(watermarkOpacity / 100));
+      form.append("watermark_font_size", String(scaledFontSize(watermarkFontSize, resolution)));
     }
     if (bgmFile) form.append("bgm", bgmFile);
     if (introFile) form.append("intro", introFile);
@@ -708,6 +793,7 @@ function App() {
       const { job_id: newJobId } = await createJob(form);
       setJobId(newJobId);
       setJobStatus({ status: "queued" });
+      setJobStartedAt(Date.now());
     } catch (err) {
       setFormError(err.message);
     } finally {
@@ -737,6 +823,8 @@ function App() {
           isDone={isDone}
           isError={isError}
           onReset={resetJob}
+          estimatedGenerationSeconds={estimatedGenerationSeconds}
+          jobStartedAt={jobStartedAt}
         />
       ) : (
         <div className="studio">
@@ -831,6 +919,8 @@ function App() {
                 subtitleBold={subtitleBold}
                 setSubtitleBold={setSubtitleBold}
                 thumbUrls={thumbUrls}
+                watermarkDecision={watermarkDecision}
+                setWatermarkDecision={setWatermarkDecision}
                 logoFile={logoFile}
                 setLogoFile={setLogoFile}
                 logoOpacity={logoOpacity}
@@ -839,6 +929,18 @@ function App() {
                 setLogoPosition={setLogoPosition}
                 logoSize={logoSize}
                 setLogoSize={setLogoSize}
+                watermarkEnabled={watermarkEnabled}
+                setWatermarkEnabled={setWatermarkEnabled}
+                watermarkText={watermarkText}
+                setWatermarkText={setWatermarkText}
+                watermarkXPercent={watermarkXPercent}
+                setWatermarkXPercent={setWatermarkXPercent}
+                watermarkYPercent={watermarkYPercent}
+                setWatermarkYPercent={setWatermarkYPercent}
+                watermarkOpacity={watermarkOpacity}
+                setWatermarkOpacity={setWatermarkOpacity}
+                watermarkFontSize={watermarkFontSize}
+                setWatermarkFontSize={setWatermarkFontSize}
                 bgmFile={bgmFile}
                 setBgmFile={setBgmFile}
                 introFile={introFile}
@@ -867,6 +969,7 @@ function App() {
               <ReviewStep
                 baseName={baseName}
                 slideCount={imageFiles.length}
+                estimatedGenerationSeconds={estimatedGenerationSeconds}
                 modeLabel={modeConfig.label}
                 voiceLabel={voiceLabel}
                 voiceRate={voiceRate}
@@ -885,6 +988,7 @@ function App() {
                     `Logo（${LOGO_POSITIONS.find((p) => p.value === logoPosition)?.label}角・${
                       LOGO_SIZES.find((s) => s.value === logoSize)?.label
                     }・透明度 ${logoOpacity}%）`,
+                  watermarkEnabled && watermarkText.trim() && "文字浮水印",
                   bgmFile && "背景音樂",
                   introFile && "片頭",
                   outroFile && "片尾",
@@ -1031,7 +1135,9 @@ function UploadStep({
         <div className="field full">
           <label htmlFor="images-input">
             每頁投影片的圖片 <FieldTag required />{" "}
-            <span className="hint">— 依順序全選，張數需與 PPTX 頁數相同</span>
+            <span className="hint">
+              — 依順序全選，張數需與 PPTX 頁數相同；請使用 PNG 或 JPG 格式圖片
+            </span>
           </label>
           <div className={`uploader${imageFiles.length ? " has-file" : ""}`}>
             <input
@@ -1506,6 +1612,8 @@ function ExtrasStep({
   subtitleBold,
   setSubtitleBold,
   thumbUrls,
+  watermarkDecision,
+  setWatermarkDecision,
   logoFile,
   setLogoFile,
   logoOpacity,
@@ -1514,6 +1622,18 @@ function ExtrasStep({
   setLogoPosition,
   logoSize,
   setLogoSize,
+  watermarkEnabled,
+  setWatermarkEnabled,
+  watermarkText,
+  setWatermarkText,
+  watermarkXPercent,
+  setWatermarkXPercent,
+  watermarkYPercent,
+  setWatermarkYPercent,
+  watermarkOpacity,
+  setWatermarkOpacity,
+  watermarkFontSize,
+  setWatermarkFontSize,
   bgmFile,
   setBgmFile,
   introFile,
@@ -1553,10 +1673,103 @@ function ExtrasStep({
     subtitleOutlineColor === SUBTITLE_OUTLINE_COLOR_DEFAULT &&
     subtitleBold === SUBTITLE_BOLD_DEFAULT;
 
+  // Switching to "不要" clears whatever image/text watermark was already
+  // set up, so a change of mind can't leak stale logo/text values into the
+  // submitted form (see the watermarkDecision === "yes" guards in
+  // handleSubmit).
+  function handleWatermarkDecision(value) {
+    setWatermarkDecision(value);
+    if (value === "no") {
+      setLogoFile(null);
+      setWatermarkEnabled(false);
+    }
+  }
+
+  const watermarkSummary =
+    watermarkDecision === "no"
+      ? "不加浮水印"
+      : watermarkDecision === "yes"
+        ? [logoFile && "圖片", watermarkEnabled && watermarkText.trim() && "文字"]
+            .filter(Boolean)
+            .join("＋") || "已選要，尚未設定內容"
+        : "尚未選擇";
+
   return (
     <div className="extras-step">
-      <CardHead eyebrow="Step 04" title="進階選項" trailing="全部選填" />
+      <CardHead eyebrow="Step 04" title="進階選項" trailing="浮水印為必選，其餘選填" />
       <div className="field-grid">
+        <CollapsibleField title="浮水印" defaultOpen required summary={watermarkSummary}>
+          <div className="field full">
+            <label htmlFor="watermark-decision-group">
+              是否要加上浮水印？ <FieldTag required />
+            </label>
+            <div
+              id="watermark-decision-group"
+              className="logo-position-grid"
+              role="group"
+              aria-label="是否要加上浮水印"
+            >
+              <button
+                type="button"
+                className={`logo-position-btn${watermarkDecision === "yes" ? " active" : ""}`}
+                aria-pressed={watermarkDecision === "yes"}
+                onClick={() => handleWatermarkDecision("yes")}
+              >
+                要
+              </button>
+              <button
+                type="button"
+                className={`logo-position-btn${watermarkDecision === "no" ? " active" : ""}`}
+                aria-pressed={watermarkDecision === "no"}
+                onClick={() => handleWatermarkDecision("no")}
+              >
+                不要
+              </button>
+            </div>
+            <p className="hint" style={{ margin: "6px 0 0" }}>
+              選「要」後可以分別設定圖片浮水印（如公司 Logo）與文字浮水印（如機密聲明），兩者可以同時使用。
+            </p>
+          </div>
+
+          {watermarkDecision === "yes" && (
+            <div className="field-grid" style={{ marginTop: 12 }}>
+              <div className="field full">
+                <label>圖片浮水印</label>
+                <LogoField
+                  file={logoFile}
+                  onChange={setLogoFile}
+                  opacity={logoOpacity}
+                  setOpacity={setLogoOpacity}
+                  position={logoPosition}
+                  setPosition={setLogoPosition}
+                  size={logoSize}
+                  setSize={setLogoSize}
+                  resolution={resolution}
+                />
+              </div>
+
+              <div className="field full">
+                <label>文字浮水印</label>
+                <WatermarkField
+                  enabled={watermarkEnabled}
+                  setEnabled={setWatermarkEnabled}
+                  text={watermarkText}
+                  setText={setWatermarkText}
+                  xPercent={watermarkXPercent}
+                  setXPercent={setWatermarkXPercent}
+                  yPercent={watermarkYPercent}
+                  setYPercent={setWatermarkYPercent}
+                  opacity={watermarkOpacity}
+                  setOpacity={setWatermarkOpacity}
+                  fontSize={watermarkFontSize}
+                  setFontSize={setWatermarkFontSize}
+                  resolution={resolution}
+                />
+              </div>
+            </div>
+          )}
+        </CollapsibleField>
+
         <div className="field full">
           <label htmlFor="preview-slide-select">
             預覽頁面 <FieldTag required={false} />
@@ -1613,10 +1826,22 @@ function ExtrasStep({
                 }}
               />
             )}
+            {watermarkEnabled && watermarkText.trim() && (
+              <span
+                className="watermark-preview-text"
+                style={{
+                  ...watermarkPositionStyle(watermarkXPercent, watermarkYPercent),
+                  fontSize: `clamp(6px, ${(watermarkFontSize / 1080) * (9 / 16) * 100}cqw, 48px)`,
+                  opacity: watermarkOpacity / 100,
+                }}
+              >
+                {watermarkText}
+              </span>
+            )}
           </div>
           <p className="hint" style={{ margin: "6px 0 0" }}>
             {previewImageUrl
-              ? "字幕與 Logo 皆按實際畫面比例即時預覽"
+              ? "字幕、Logo 與浮水印皆按實際畫面比例即時預覽"
               : "尚未有可預覽的頁面"}
           </p>
         </div>
@@ -1701,35 +1926,17 @@ function ExtrasStep({
         >
           <div className="field full">
             <label htmlFor="custom-dict-textarea">字幕斷詞用詞庫</label>
+            <p className="hint" style={{ margin: "0 0 6px" }}>
+              每行一個詞，例如公司名稱或專業術語，如「普拉斯提亞雲端」「職場健康促進計畫」；讓字幕換行時不拆開這些詞，不影響發音。
+            </p>
             <textarea
               id="custom-dict-textarea"
               rows={3}
               value={customDict}
               onChange={(e) => setCustomDict(e.target.value)}
-              placeholder={"每行一個詞，例如公司名稱或專業術語：\n普拉斯提亞雲端\n職場健康促進計畫"}
+              placeholder="每行輸入一個詞"
             />
-            <p className="hint" style={{ margin: "6px 0 0" }}>
-              讓字幕換行時不拆開這些詞；不影響發音。
-            </p>
           </div>
-        </CollapsibleField>
-
-        <CollapsibleField
-          title="Logo 圖片（浮水印）"
-          defaultOpen={Boolean(logoFile)}
-          summary={logoFile ? logoFile.name : "尚未設定"}
-        >
-          <LogoField
-            file={logoFile}
-            onChange={setLogoFile}
-            opacity={logoOpacity}
-            setOpacity={setLogoOpacity}
-            position={logoPosition}
-            setPosition={setLogoPosition}
-            size={logoSize}
-            setSize={setLogoSize}
-            resolution={resolution}
-          />
         </CollapsibleField>
 
         <CollapsibleField
@@ -2136,6 +2343,123 @@ function LogoField({
   );
 }
 
+// Text watermark (distinct from LogoField's image watermark above) -- e.g.
+// a confidentiality notice. Position is two free percent sliders rather
+// than the Logo's fixed 4-corner grid, since this is meant to be readable
+// text placed anywhere on the frame, not a small mark tucked into a corner.
+function WatermarkField({
+  enabled,
+  setEnabled,
+  text,
+  setText,
+  xPercent,
+  setXPercent,
+  yPercent,
+  setYPercent,
+  opacity,
+  setOpacity,
+  fontSize,
+  setFontSize,
+  resolution,
+}) {
+  return (
+    <>
+      <label className="watermark-toggle">
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={(e) => setEnabled(e.target.checked)}
+        />
+        加上文字浮水印
+      </label>
+
+      {enabled && (
+        <div className="field-grid" style={{ marginTop: 12 }}>
+          <div className="field full">
+            <label htmlFor="watermark-text-input">浮水印文字</label>
+            <textarea
+              id="watermark-text-input"
+              rows={2}
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+            />
+            {!text.trim() && (
+              <p className="form-error" style={{ margin: "6px 0 0" }}>
+                文字不可留空，否則不會加上浮水印。
+              </p>
+            )}
+          </div>
+
+          <div className="field">
+            <label htmlFor="watermark-x-range">
+              水平位置 <span className="hint">{xPercent}%（0 為最左，100 為最右）</span>
+            </label>
+            <input
+              id="watermark-x-range"
+              type="range"
+              min={WATERMARK_POSITION_MIN}
+              max={WATERMARK_POSITION_MAX}
+              step={1}
+              value={xPercent}
+              onChange={(e) => setXPercent(Number(e.target.value))}
+            />
+          </div>
+
+          <div className="field">
+            <label htmlFor="watermark-y-range">
+              垂直位置 <span className="hint">{yPercent}%（0 為最上，100 為最下）</span>
+            </label>
+            <input
+              id="watermark-y-range"
+              type="range"
+              min={WATERMARK_POSITION_MIN}
+              max={WATERMARK_POSITION_MAX}
+              step={1}
+              value={yPercent}
+              onChange={(e) => setYPercent(Number(e.target.value))}
+            />
+          </div>
+
+          <div className="field">
+            <label htmlFor="watermark-opacity-range">
+              透明度 <span className="hint">{opacity}%</span>
+            </label>
+            <input
+              id="watermark-opacity-range"
+              type="range"
+              min={WATERMARK_OPACITY_MIN}
+              max={WATERMARK_OPACITY_MAX}
+              step={5}
+              value={opacity}
+              onChange={(e) => setOpacity(Number(e.target.value))}
+            />
+          </div>
+
+          <div className="field">
+            <label htmlFor="watermark-font-size-range">
+              字級大小{" "}
+              <span className="hint">約 {scaledFontSize(fontSize, resolution)}px</span>
+            </label>
+            <input
+              id="watermark-font-size-range"
+              type="range"
+              min={WATERMARK_FONT_SIZE_MIN}
+              max={WATERMARK_FONT_SIZE_MAX}
+              step={2}
+              value={fontSize}
+              onChange={(e) => setFontSize(Number(e.target.value))}
+            />
+          </div>
+
+          <p className="hint field full" style={{ margin: 0 }}>
+            位置、大小會同步顯示在上方的預覽畫面。
+          </p>
+        </div>
+      )}
+    </>
+  );
+}
+
 function ScriptFileUpload({ onExtracted }) {
   const [extracting, setExtracting] = useState(false);
   const [extractError, setExtractError] = useState(null);
@@ -2393,6 +2717,7 @@ function VisualRecommendationCard({
 function ReviewStep({
   baseName,
   slideCount,
+  estimatedGenerationSeconds,
   modeLabel,
   voiceLabel,
   voiceRate,
@@ -2436,6 +2761,8 @@ function ReviewStep({
     ]
   );
 
+  const estimatedDurationLabel = formatEstimatedDuration(estimatedGenerationSeconds);
+
   return (
     <>
       <CardHead eyebrow="Step 06" title="確認並開始製作" />
@@ -2447,6 +2774,11 @@ function ReviewStep({
           </div>
         ))}
       </dl>
+      {estimatedDurationLabel && (
+        <p className="status-caption" style={{ marginTop: 12 }}>
+          ⏱ 預估生成時間：{estimatedDurationLabel}（僅供參考，實際時間依伺服器忙碌程度而定）
+        </p>
+      )}
     </>
   );
 }
@@ -2470,7 +2802,7 @@ function FieldTag({ required }) {
 // set up. Each step remounts this component fresh when the wizard
 // navigates away and back, so re-deriving `defaultOpen` from current state
 // on mount is enough — no extra sync effect needed.
-function CollapsibleField({ title, defaultOpen = false, summary, children }) {
+function CollapsibleField({ title, defaultOpen = false, required = false, summary, children }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
     <div className={"field full collapsible-field" + (open ? " open" : "")}>
@@ -2482,7 +2814,7 @@ function CollapsibleField({ title, defaultOpen = false, summary, children }) {
       >
         <span className="collapsible-toggle-title">
           {title}
-          <FieldTag required={false} />
+          <FieldTag required={required} />
         </span>
         <span className="collapsible-toggle-right">
           {!open && summary && <span className="collapsible-toggle-summary">{summary}</span>}
@@ -2585,7 +2917,6 @@ function HelpWidget() {
                 <li>投影片圖片請用截圖，避免系統重繪造成字型跑版</li>
                 <li>自己貼講稿時用「第1頁」標記分頁</li>
                 <li>公司名稱等專有名詞怕被拆字？填到「自訂詞庫」</li>
-                <li>也可用 QR Code 讓手機掃碼下載</li>
               </ul>
             </div>
           </div>
@@ -2595,28 +2926,22 @@ function HelpWidget() {
   );
 }
 
-function MobileDownloadQr({ jobId }) {
-  const canvasRef = useRef(null);
-  // Points at the /share landing page, not the raw download link directly —
-  // a QR scanner's in-app browser silently triggers-and-abandons a direct
-  // attachment download (blank tab, no confirmation). /share gives the
-  // phone something to land on and choose preview or download from.
-  const absoluteUrl = toAbsoluteUrl(`share/${jobId}`);
+function StatusView({
+  jobId,
+  jobStatus,
+  isRunning,
+  isDone,
+  isError,
+  onReset,
+  estimatedGenerationSeconds,
+  jobStartedAt,
+}) {
+  // Re-derived on every render, which — while isRunning — happens on every
+  // status poll tick (see POLL_INTERVAL_MS), so this counts down roughly
+  // live without needing its own timer.
+  const remainingSeconds = estimateRemainingSeconds(estimatedGenerationSeconds, jobStartedAt);
+  const remainingLabel = formatEstimatedDuration(remainingSeconds);
 
-  useEffect(() => {
-    if (!canvasRef.current) return;
-    QRCode.toCanvas(canvasRef.current, absoluteUrl, { width: 148, margin: 1 }).catch(() => {});
-  }, [absoluteUrl]);
-
-  return (
-    <div className="qr-block">
-      <canvas ref={canvasRef} />
-      <p className="status-caption">掃描 QR Code，在手機上下載課程影片</p>
-    </div>
-  );
-}
-
-function StatusView({ jobId, jobStatus, isRunning, isDone, isError, onReset }) {
   return (
     <div className="status-panel">
       <div className="top-row">
@@ -2634,6 +2959,7 @@ function StatusView({ jobId, jobStatus, isRunning, isDone, isError, onReset }) {
           {jobStatus.status === "queued"
             ? "排隊中，前面的任務跑完就輪到你了..."
             : "處理中，請稍候..."}
+          {jobStatus.status === "running" && remainingLabel && `（預估還需${remainingLabel}）`}
         </p>
       )}
 
@@ -2672,8 +2998,6 @@ function StatusView({ jobId, jobStatus, isRunning, isDone, isError, onReset }) {
               </div>
             </dl>
           )}
-
-          {jobStatus.downloads.mp4 && <MobileDownloadQr jobId={jobId} />}
         </>
       )}
 
