@@ -80,16 +80,26 @@ function syncSlideTextCount() {
 }
 
 // ---- Step 2: script source --------------------------------------------------
-document.querySelectorAll("#step2 .toggle-btn").forEach((btn) => {
-  btn.addEventListener("click", () => {
-    document.querySelectorAll("#step2 .toggle-btn").forEach((b) => b.classList.remove("active"));
-    btn.classList.add("active");
-    state.scriptMode = btn.dataset.mode;
-    $("paste-mode-panel").style.display = state.scriptMode === "paste" ? "" : "none";
-    $("per-slide-mode-panel").style.display = state.scriptMode === "perSlide" ? "" : "none";
+// setScriptMode() both selects the mode AND disables the now-active toggle
+// button. A plain .active class alone left the currently-selected button
+// still looking clickable -- clicking it is a no-op (you're already on that
+// mode), which real users read as "this button is broken" rather than "this
+// button is already selected". Disabling it makes "already selected" and
+// "not clickable" the same, correct, visible state.
+function setScriptMode(mode) {
+  state.scriptMode = mode;
+  document.querySelectorAll("#step2 .toggle-btn").forEach((b) => {
+    const isActive = b.dataset.mode === mode;
+    b.classList.toggle("active", isActive);
+    b.disabled = isActive;
   });
+  $("paste-mode-panel").style.display = mode === "paste" ? "" : "none";
+  $("per-slide-mode-panel").style.display = mode === "perSlide" ? "" : "none";
+}
+document.querySelectorAll("#step2 .toggle-btn").forEach((btn) => {
+  btn.addEventListener("click", () => setScriptMode(btn.dataset.mode));
 });
-document.querySelector('#step2 .toggle-btn[data-mode="paste"]').classList.add("active");
+setScriptMode("paste");
 
 $("paste-parse-btn").addEventListener("click", () => {
   const raw = $("paste-textarea").value;
@@ -105,11 +115,7 @@ $("paste-parse-btn").addEventListener("click", () => {
   }
   errorEl.textContent = "";
   state.slideTexts = result.texts;
-  state.scriptMode = "perSlide";
-  document.querySelectorAll("#step2 .toggle-btn").forEach((b) => b.classList.remove("active"));
-  document.querySelector('#step2 .toggle-btn[data-mode="perSlide"]').classList.add("active");
-  $("paste-mode-panel").style.display = "none";
-  $("per-slide-mode-panel").style.display = "";
+  setScriptMode("perSlide");
   renderPerSlideTextareas();
 });
 
