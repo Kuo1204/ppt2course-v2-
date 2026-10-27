@@ -34,9 +34,22 @@ let pipelinePromise = null;
 async function getSynthesizer(onProgress) {
   if (!pipelinePromise) {
     pipelinePromise = (async () => {
-      const { pipeline } = await import(
+      const { pipeline, env } = await import(
         "https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.2.0"
       );
+      // GitHub Pages can't set the COOP/COEP response headers that make a
+      // page "cross-origin isolated", so SharedArrayBuffer is unavailable
+      // here (confirmed via a real user's DevTools "Issues" tab: "Issues:
+      // SharedArrayBuffer usage is restricted to cross-origin isolated
+      // sites"). onnxruntime-web's WASM backend defaults to multi-threaded
+      // execution, which needs SharedArrayBuffer -- without it, it doesn't
+      // cleanly fall back, it just hangs forever on the first inference
+      // call with no error at all (exactly the "stuck at 產生第 1/10 頁"
+      // symptom this fixes). Forcing numThreads to 1 makes it use the
+      // plain single-threaded WASM path instead, same as the single-
+      // threaded ffmpeg.wasm core used elsewhere in this app for the same
+      // cross-origin-isolation reason.
+      env.backends.onnx.wasm.numThreads = 1;
       return pipeline("text-to-speech", "BricksDisplay/vits-cmn", {
         dtype: "fp32",
         progress_callback: onProgress,
