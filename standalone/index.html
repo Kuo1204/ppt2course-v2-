@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PPT2Course 緊急備援版</title>
+<link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+<div class="page">
+  <header class="app-header">
+    <h1>PPT2Course 緊急備援版（純前端 / 離線渲染）</h1>
+    <p class="hint">
+      本頁面完全在你的瀏覽器裡執行（語音合成 + 影片合成都在本機跑），不會連到公司內網，也不需要任何伺服器。
+      第一次使用會從公開網路下載語音模型與字幕字型（數十 MB），之後瀏覽器會快取。
+      本版本不支援 AI 自動生成講稿、也不支援從 PPTX 檔案抽取備忘稿 — 請改用每頁截圖 + 自行輸入講稿。
+    </p>
+  </header>
+
+  <main>
+    <section class="card" id="step1">
+      <div class="card-head"><span class="eyebrow">Step 01</span><h2>上傳投影片圖片</h2></div>
+      <div class="field full">
+        <label for="slide-input">逐頁投影片圖片（依選取順序排列，可一次選取多張）</label>
+        <input id="slide-input" type="file" accept="image/*" multiple />
+        <p class="hint" id="slide-count-hint">尚未上傳任何圖片</p>
+        <div id="slide-thumbs" class="thumb-grid"></div>
+      </div>
+      <div class="field">
+        <label for="base-name-input">課程名稱（檔名用）</label>
+        <input id="base-name-input" type="text" value="課程" />
+      </div>
+    </section>
+
+    <section class="card" id="step2">
+      <div class="card-head"><span class="eyebrow">Step 02</span><h2>講稿來源</h2></div>
+      <div class="field full">
+        <label>輸入方式</label>
+        <div class="btn-row" role="group">
+          <button type="button" class="toggle-btn active" data-mode="paste">貼上整份講稿（含頁碼標記）</button>
+          <button type="button" class="toggle-btn" data-mode="perSlide">逐頁個別輸入</button>
+        </div>
+      </div>
+      <div class="field full" id="paste-mode-panel">
+        <label for="paste-textarea">貼上整份講稿</label>
+        <p class="hint">
+          請用「第1頁」「第2頁」…（或「第一頁」「第二頁」）標示每一頁的開頭，例如：<br />
+          <code>第1頁：大家好，歡迎來到這堂課。第2頁：這一頁要介紹...</code>
+        </p>
+        <textarea id="paste-textarea" rows="8" placeholder="第1頁：...&#10;第2頁：..."></textarea>
+        <div class="btn-row">
+          <button type="button" id="paste-parse-btn" class="btn-secondary">解析頁碼並套用</button>
+          <button type="button" id="paste-file-btn" class="btn-secondary">或上傳講稿文字檔（.txt）</button>
+          <input type="file" id="paste-file-input" accept=".txt,text/plain" style="display:none;" />
+        </div>
+        <p class="hint error" id="paste-error"></p>
+      </div>
+      <div class="field full" id="per-slide-mode-panel" style="display:none;">
+        <label>逐頁講稿</label>
+        <div id="per-slide-textareas"></div>
+      </div>
+    </section>
+
+    <section class="card" id="step3">
+      <div class="card-head"><span class="eyebrow">Step 03</span><h2>語音與轉場</h2></div>
+      <p class="hint">
+        本備援版固定使用單一離線中文語音（vits-cmn），不提供多語音選擇 — 這是刻意的範圍簡化，詳見 BUILD_NOTES.md。
+      </p>
+      <div class="field-grid">
+        <div class="field">
+          <label for="rate-range">語速 <span class="hint" id="rate-label">+0%</span></label>
+          <input id="rate-range" type="range" min="-50" max="100" step="5" value="0" />
+        </div>
+        <div class="field">
+          <label for="volume-range">音量 <span class="hint" id="volume-label">+0%</span></label>
+          <input id="volume-range" type="range" min="-50" max="50" step="5" value="0" />
+        </div>
+        <div class="field">
+          <label for="transition-select">轉場效果</label>
+          <select id="transition-select"></select>
+        </div>
+        <div class="field">
+          <label for="transition-duration-select">轉場長度</label>
+          <select id="transition-duration-select"></select>
+        </div>
+        <div class="field">
+          <label for="resolution-select">輸出解析度</label>
+          <select id="resolution-select"></select>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" id="step4">
+      <div class="card-head"><span class="eyebrow">Step 04</span><h2>進階選項</h2></div>
+
+      <div class="field-group">
+        <h3>浮水印（必選）</h3>
+        <div class="field full">
+          <label>是否要加上浮水印？ <span class="required">*必填</span></label>
+          <div class="btn-row" role="group">
+            <button type="button" class="toggle-btn" id="watermark-yes-btn">要</button>
+            <button type="button" class="toggle-btn" id="watermark-no-btn">不要</button>
+          </div>
+          <p class="hint">選「要」後可以分別設定圖片浮水印（如公司 Logo）與文字浮水印（如機密聲明），兩者可同時使用，至少需設定一項。</p>
+        </div>
+        <div id="watermark-detail" style="display:none;">
+          <div class="field-group-nested">
+            <h4>圖片浮水印</h4>
+            <div class="field-grid">
+              <div class="field"><label for="logo-input">Logo 圖片</label><input id="logo-input" type="file" accept="image/*" /></div>
+              <div class="field"><label for="logo-opacity">不透明度</label><input id="logo-opacity" type="range" min="10" max="100" step="5" value="100" /><span class="hint" id="logo-opacity-label">100%</span></div>
+              <div class="field"><label for="logo-position">位置</label><select id="logo-position"></select></div>
+              <div class="field"><label for="logo-size">大小</label><select id="logo-size"></select></div>
+            </div>
+          </div>
+          <div class="field-group-nested">
+            <h4>文字浮水印</h4>
+            <div class="field full"><label><input type="checkbox" id="watermark-enabled" /> 啟用文字浮水印</label></div>
+            <div class="field-grid">
+              <div class="field full"><label for="watermark-text">文字內容</label><input id="watermark-text" type="text" value="本影片僅供公司內部使用，請勿對外轉傳或分享。" /></div>
+              <div class="field"><label for="watermark-x">水平位置 (%)</label><input id="watermark-x" type="range" min="0" max="100" step="5" value="50" /><span class="hint" id="watermark-x-label">50%</span></div>
+              <div class="field"><label for="watermark-y">垂直位置 (%)</label><input id="watermark-y" type="range" min="0" max="100" step="5" value="90" /><span class="hint" id="watermark-y-label">90%</span></div>
+              <div class="field"><label for="watermark-opacity">不透明度</label><input id="watermark-opacity" type="range" min="10" max="100" step="5" value="50" /><span class="hint" id="watermark-opacity-label">50%</span></div>
+              <div class="field"><label for="watermark-font-size">字體大小</label><input id="watermark-font-size" type="range" min="16" max="64" step="2" value="28" /><span class="hint" id="watermark-font-size-label">28px</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="field-group">
+        <h3>字幕樣式</h3>
+        <div class="field-grid">
+          <div class="field"><label for="font-size-select">字幕大小</label><select id="font-size-select"></select></div>
+          <div class="field"><label for="subtitle-position">垂直位置（距底部 %）</label><input id="subtitle-position" type="range" min="2" max="30" step="1" value="3" /><span class="hint" id="subtitle-position-label">3%</span></div>
+          <div class="field"><label for="subtitle-font-color">字體顏色</label><input id="subtitle-font-color" type="color" value="#ffffff" /></div>
+          <div class="field"><label for="subtitle-outline-color">外框顏色</label><input id="subtitle-outline-color" type="color" value="#000000" /></div>
+          <div class="field"><label><input type="checkbox" id="subtitle-bold" /> 粗體（以加粗外框近似，詳見說明）</label></div>
+        </div>
+      </div>
+
+      <div class="field-group">
+        <h3>節奏控制</h3>
+        <div class="field full"><label><input type="checkbox" id="target-duration-enabled" /> 設定目標總長度（自動分配每頁停頓）</label></div>
+        <div class="field-grid">
+          <div class="field"><label for="target-duration">目標長度（秒）</label><input id="target-duration" type="number" min="10" value="120" /></div>
+          <div class="field"><label for="reading-pause">每頁閱讀停頓（秒）</label><input id="reading-pause" type="range" min="0" max="10" step="0.5" value="0" /><span class="hint" id="reading-pause-label">0.0 秒</span></div>
+          <div class="field"><label for="closing-pause">結尾額外停留（秒）</label><input id="closing-pause" type="range" min="0" max="10" step="0.5" value="0" /><span class="hint" id="closing-pause-label">0.0 秒</span></div>
+          <div class="field full"><label><input type="checkbox" id="avoid-voice-overlap" /> 避免語音重疊（轉場時改用直接切換，確保旁白不重疊，詳見說明）</label></div>
+        </div>
+      </div>
+
+      <div class="field-group">
+        <h3>自訂詞庫</h3>
+        <p class="hint">每行一個詞，字幕換行時不會把這些詞拆開（簡易規則，非完整中文斷詞）。</p>
+        <textarea id="custom-dict" rows="3" placeholder="例如：\n人工智慧\n世界貿易組織"></textarea>
+      </div>
+
+      <div class="field-group">
+        <h3>背景音樂 / 片頭 / 片尾</h3>
+        <div class="field-grid">
+          <div class="field"><label for="bgm-input">背景音樂</label><input id="bgm-input" type="file" accept="audio/*" /></div>
+          <div class="field"><label for="bgm-volume">背景音樂音量</label><input id="bgm-volume" type="range" min="0" max="100" step="5" value="20" /><span class="hint" id="bgm-volume-label">20%</span></div>
+          <div class="field"><label for="intro-input">片頭影片</label><input id="intro-input" type="file" accept="video/*" /></div>
+          <div class="field"><label for="outro-input">片尾影片</label><input id="outro-input" type="file" accept="video/*" /></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" id="step5">
+      <div class="card-head"><span class="eyebrow">Step 05</span><h2>開始製作</h2></div>
+      <p class="hint" id="validation-summary"></p>
+      <button type="button" id="generate-btn" class="btn-primary">開始產生影片</button>
+      <div id="progress-panel" style="display:none;">
+        <div class="progress-bar-outer"><div class="progress-bar-inner" id="progress-bar-inner"></div></div>
+        <div id="progress-log" class="progress-log"></div>
+      </div>
+      <div id="result-panel" style="display:none;">
+        <h3>完成！</h3>
+        <div class="btn-row">
+          <a id="download-mp4" class="btn-secondary" download>下載課程影片 (.mp4)</a>
+          <a id="download-srt" class="btn-secondary" download>下載字幕檔 (.srt)</a>
+          <a id="download-docx" class="btn-secondary" download>下載講稿 (.docx)</a>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="app-footer">
+    <p class="hint">緊急備援版 — 詳見 standalone/BUILD_NOTES.md 了解與正式版的差異。</p>
+  </footer>
+</div>
+<script type="module" src="./app.js"></script>
+</body>
+</html>
