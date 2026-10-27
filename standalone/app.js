@@ -113,6 +113,30 @@ $("paste-parse-btn").addEventListener("click", () => {
   renderPerSlideTextareas();
 });
 
+// "或上傳講稿文字檔" -- lets someone paste a .txt file's content into the
+// textarea instead of copy/pasting by hand (e.g. a script drafted and saved
+// elsewhere). Purely a convenience on top of the existing paste flow: it
+// does not auto-parse, so the user still reviews the text and presses
+// "解析頁碼並套用" themselves, same as if they'd typed/pasted it directly.
+$("paste-file-btn").addEventListener("click", () => {
+  $("paste-file-input").click();
+});
+$("paste-file-input").addEventListener("change", (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const errorEl = $("paste-error");
+  const reader = new FileReader();
+  reader.onload = () => {
+    $("paste-textarea").value = String(reader.result);
+    errorEl.textContent = "";
+  };
+  reader.onerror = () => {
+    errorEl.textContent = "讀取檔案失敗，請確認是純文字檔（.txt）。";
+  };
+  reader.readAsText(file, "utf-8");
+  e.target.value = ""; // allow re-selecting the same file later
+});
+
 function renderPerSlideTextareas() {
   const container = $("per-slide-textareas");
   container.innerHTML = "";

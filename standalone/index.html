@@ -48,7 +48,11 @@
           <code>第1頁：大家好，歡迎來到這堂課。第2頁：這一頁要介紹...</code>
         </p>
         <textarea id="paste-textarea" rows="8" placeholder="第1頁：...&#10;第2頁：..."></textarea>
-        <button type="button" id="paste-parse-btn" class="btn-secondary">解析頁碼並套用</button>
+        <div class="btn-row">
+          <button type="button" id="paste-parse-btn" class="btn-secondary">解析頁碼並套用</button>
+          <button type="button" id="paste-file-btn" class="btn-secondary">或上傳講稿文字檔（.txt）</button>
+          <input type="file" id="paste-file-input" accept=".txt,text/plain" style="display:none;" />
+        </div>
         <p class="hint error" id="paste-error"></p>
       </div>
       <div class="field full" id="per-slide-mode-panel" style="display:none;">
